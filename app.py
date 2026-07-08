@@ -12,6 +12,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 from modules.image_auditor import _fetch_size
 from modules.api_key_manager import APIKeyManager, CATEGORIES, test_api_key
@@ -1685,6 +1686,7 @@ def page_new_audit():
                 st.session_state.last_audit_date  = datetime.now().strftime("%Y-%m-%d %H:%M")
                 st.session_state.selected_url_idx = 0
                 st.session_state.single_result    = result
+                st.session_state["la_ov_filter"]  = None
 
         if st.session_state.single_result:
             render_inline_result(st.session_state.single_result)
@@ -1717,6 +1719,7 @@ def page_new_audit():
                     bar.progress(1.0); stat.text("Done!")
                     st.session_state.audit_results   = new_res + st.session_state.audit_results
                     st.session_state.last_audit_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    st.session_state["la_ov_filter"]  = None
                     st.success(f"✅ Audited {len(new_res)} URLs.")
 
     # ── Sitemap ───────────────────────────────────────────────────────────
@@ -1756,6 +1759,7 @@ def page_new_audit():
                         bar.progress(1.0); stat.text("Done!")
                         st.session_state.audit_results   = new_res + st.session_state.audit_results
                         st.session_state.last_audit_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        st.session_state["la_ov_filter"]  = None
                         st.success(f"✅ Audited {len(new_res)} URLs.")
 
 
@@ -1873,6 +1877,7 @@ def page_results():
                 st.session_state.audit_results   = []
                 st.session_state.last_audit_date = None
                 st.session_state.single_result   = None
+                st.session_state["la_ov_filter"] = None
                 st.session_state["_confirm_clear"] = False
                 st.rerun()
         with cc2:
@@ -2385,11 +2390,30 @@ def page_url_detail():
 
             # ── Content Body Preview ─────────────────────────────────────
             st.markdown("---")
-            intro_paras = cont.get("intro_paragraphs", [])
-            conc_paras  = cont.get("conclusion_paragraphs", [])
-            total_paras = cont.get("total_paragraphs", 0)
+            intro_paras   = cont.get("intro_paragraphs", [])
+            conc_paras    = cont.get("conclusion_paragraphs", [])
+            intro_html    = cont.get("intro_paragraphs_html", [])
+            conc_html     = cont.get("conclusion_paragraphs_html", [])
+            total_paras   = cont.get("total_paragraphs", 0)
+
+            import html as _h_body
+            def _safe_para_html(paras, paras_html, i):
+                # Prefer the pre-rendered, link-highlighted HTML; fall back to
+                # escaped plain text for results captured before this field existed.
+                if i < len(paras_html) and paras_html[i]:
+                    return paras_html[i]
+                p = paras[i]
+                return _h_body.escape(p[:400]) + ("…" if len(p) > 400 else "")
 
             if intro_paras or conc_paras:
+                st.markdown(
+                    "<div style='font-size:.72rem;color:var(--seo-muted,#64748B);margin-bottom:6px'>"
+                    "Links found in body content: "
+                    "<span style='color:#1D4ED8;font-weight:700'>🔵 Internal</span> &nbsp;"
+                    "<span style='color:#7C3AED;font-weight:700'>🟣 External</span>"
+                    "</div>",
+                    unsafe_allow_html=True
+                )
                 cp1, cp2 = st.columns(2)
 
                 with cp1:
@@ -2405,11 +2429,12 @@ def page_url_detail():
                         for i, para in enumerate(intro_paras):
                             border = "3px solid var(--seo-accent,#3B82F6)" if i == 0 else "2px solid var(--seo-accent-border,#93C5FD)"
                             opacity = "1" if i == 0 else "0.75"
+                            para_html = _safe_para_html(intro_paras, intro_html, i)
                             st.markdown(
                                 f"<div style='border-left:{border};background:var(--seo-info-bg,rgba(37,99,235,.07));"
                                 f"padding:10px 14px;border-radius:0 6px 6px 0;margin-bottom:8px;"
                                 f"opacity:{opacity}'>"
-                                f"<span style='font-size:.78rem;color:var(--seo-text,#334155);line-height:1.6'>{para[:400]}{'…' if len(para)>400 else ''}</span>"
+                                f"<span style='font-size:.78rem;color:var(--seo-text,#334155);line-height:1.6'>{para_html}</span>"
                                 f"</div>",
                                 unsafe_allow_html=True
                             )
@@ -2429,11 +2454,12 @@ def page_url_detail():
                         for i, para in enumerate(conc_paras):
                             border = "3px solid var(--seo-success,#10B981)" if i == len(conc_paras)-1 else "2px solid var(--seo-success-border,rgba(5,150,105,.4))"
                             opacity = "1" if i == len(conc_paras)-1 else "0.75"
+                            para_html = _safe_para_html(conc_paras, conc_html, i)
                             st.markdown(
                                 f"<div style='border-left:{border};background:var(--seo-success-bg,rgba(5,150,105,.07));"
                                 f"padding:10px 14px;border-radius:0 6px 6px 0;margin-bottom:8px;"
                                 f"opacity:{opacity}'>"
-                                f"<span style='font-size:.78rem;color:var(--seo-text,#334155);line-height:1.6'>{para[:400]}{'…' if len(para)>400 else ''}</span>"
+                                f"<span style='font-size:.78rem;color:var(--seo-text,#334155);line-height:1.6'>{para_html}</span>"
                                 f"</div>",
                                 unsafe_allow_html=True
                             )
@@ -2550,6 +2576,48 @@ def page_link_analysis():
     if "la_ov_filter" not in st.session_state:
         st.session_state["la_ov_filter"] = None   # (kind, filter_key)
 
+    def _scroll_to_filtered_results(anchor_id):
+        """Auto-scroll the page to a just-revealed filtered link table.
+        Streamlit reruns land back at the top of the page on every click, so
+        without this the filtered table clicking a KPI card reveals is
+        invisible until the user manually scrolls past the cards/charts.
+        Uses components.v1.html (a real iframe) because <script> tags injected
+        via st.markdown/st.html do not reliably re-execute on repeat reruns —
+        only the iframe route guarantees the script runs every time."""
+        st.markdown(f"<div id='{anchor_id}'></div>", unsafe_allow_html=True)
+        components.html(f"""
+        <script>
+        (function() {{
+            function doScroll() {{
+                var doc = window.parent.document;
+                var el = doc.getElementById('{anchor_id}');
+                if (!el) return;
+                // Walk up to the nearest scrollable ancestor (Streamlit's main
+                // content section) — cross-frame scrollIntoView() is silently
+                // dropped by some browsers, so we set scrollTop directly instead.
+                var container = el.parentElement;
+                while (container && container !== doc.body) {{
+                    var style = window.parent.getComputedStyle(container);
+                    if (style.overflowY === 'auto' || style.overflowY === 'scroll') break;
+                    container = container.parentElement;
+                }}
+                if (!container) return;
+                var target = el.getBoundingClientRect().top - container.getBoundingClientRect().top
+                             + container.scrollTop - 12;
+                // 'auto' (instant), not 'smooth' — some browsers silently
+                // drop animated cross-frame scrolls but honor instant ones.
+                container.scrollTo({{top: target, behavior: 'auto'}});
+            }}
+            // Run immediately (elements above us in the DOM are already
+            // committed by the time Streamlit reaches this component) and
+            // once more on next paint — avoids setTimeout, whose callbacks
+            // can be dropped in zero-height iframes by some browsers.
+            doScroll();
+            requestAnimationFrame(doScroll);
+        }})();
+        </script>
+        """, height=0)
+
     def _kpi_card_btn(col, label, val, clr, fkind, fkey):
         """Render a clickable KPI card. Sets session_state filter on click."""
         active = st.session_state.get("la_ov_filter") == (fkind, fkey)
@@ -2626,6 +2694,7 @@ def page_link_analysis():
             kind_label = "Internal" if fkind == "int" else "External"
             kind_icon  = "🔵" if fkind == "int" else "🟣"
             st.markdown("---")
+            _scroll_to_filtered_results("la-ov-filtered")
             st.markdown(
                 f"<div style='display:flex;align-items:center;gap:10px;margin-bottom:8px'>"
                 f"<span style='font-size:1rem;font-weight:700;color:var(--seo-heading,#0F172A)'>"
@@ -2742,6 +2811,7 @@ def page_link_analysis():
             matched = next((links for lbl, val, clr, fk0, fk1, links in _int_tab_cards if fk1 == fkey), [])
             lbl_name = next((lbl for lbl, val, clr, fk0, fk1, links in _int_tab_cards if fk1 == fkey), fkey)
             st.markdown("---")
+            _scroll_to_filtered_results("la-int-filtered")
             st.markdown(f"**🔵 Internal — {lbl_name}** &nbsp; <span style='background:var(--seo-card-bg-alt,#F1F5F9);color:var(--seo-muted,#475569);padding:2px 8px;border-radius:12px;font-size:.75rem;font-weight:600'>{len(matched)} links</span>", unsafe_allow_html=True)
             if matched:
                 render_link_table(matched, show_source=True, source_label="Source Page", max_rows=300, key_prefix=f"la_{fkey}")
@@ -2806,6 +2876,7 @@ def page_link_analysis():
             matched = next((links for lbl, val, clr, fk0, fk1, links in _ext_sec_cards if fk1 == fkey), [])
             lbl_name = next((lbl for lbl, val, clr, fk0, fk1, links in _ext_sec_cards if fk1 == fkey), fkey)
             st.markdown("---")
+            _scroll_to_filtered_results("la-ext-filtered")
             st.markdown(f"**🟣 External — {lbl_name}** &nbsp; <span style='background:var(--seo-card-bg-alt,#F1F5F9);color:var(--seo-muted,#475569);padding:2px 8px;border-radius:12px;font-size:.75rem;font-weight:600'>{len(matched)} links</span>", unsafe_allow_html=True)
             if matched:
                 render_link_table(matched, show_source=True, source_label="Source Page", max_rows=300, key_prefix=f"la_e_{fkey}")

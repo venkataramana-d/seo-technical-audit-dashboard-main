@@ -331,7 +331,7 @@ def analyze_url_structure(url, response_time=0.0):
     }
 
 
-def analyze_content(soup, html: str = ""):
+def analyze_content(soup, html: str = "", base_url: str = ""):
     """Analyse content quality. Parses from raw HTML when available to avoid re-serialising soup."""
     issues = []
     # Parse a fresh tree from raw HTML so we can decompose tags without mutating the shared soup
@@ -364,19 +364,27 @@ def analyze_content(soup, html: str = ""):
             impact_score=3, effort="Medium"))
 
     # Extract beginning and ending paragraphs for content preview
-    paras = [
-        p.get_text(separator=" ", strip=True)
-        for p in soup_copy.find_all("p")
+    para_tags = [
+        p for p in soup_copy.find_all("p")
         if len(p.get_text(strip=True)) > 60   # skip very short/nav paragraphs
     ]
-    intro_paras     = paras[:3]   # first 3 meaningful paragraphs
-    conclusion_paras = paras[-3:] if len(paras) > 3 else []
+    paras = [p.get_text(separator=" ", strip=True) for p in para_tags]
+    intro_paras       = paras[:3]   # first 3 meaningful paragraphs
+    conclusion_paras  = paras[-3:] if len(paras) > 3 else []
+
+    intro_tags       = para_tags[:3]
+    conclusion_tags  = para_tags[-3:] if len(para_tags) > 3 else []
+    from modules.link_auditor import linkify_paragraph_html
+    intro_html      = [linkify_paragraph_html(p, base_url) for p in intro_tags]
+    conclusion_html = [linkify_paragraph_html(p, base_url) for p in conclusion_tags]
 
     return {
         "word_count": word_count, "reading_time": reading_time,
         "content_ratio": content_ratio, "is_thin": word_count < THIN_THRESHOLD,
         "intro_paragraphs": intro_paras,
         "conclusion_paragraphs": conclusion_paras,
+        "intro_paragraphs_html": intro_html,
+        "conclusion_paragraphs_html": conclusion_html,
         "total_paragraphs": len(paras),
         "issues": issues,
     }
@@ -535,7 +543,7 @@ def audit_url(url, audit_type="auto", check_links=True, validate_links=False,
     result["canonical"]    = analyze_canonical(soup, url)
     result["indexability"] = analyze_indexability(soup)
     result["url_structure"] = analyze_url_structure(url, result["response_time"])
-    result["content"]      = analyze_content(soup, html=fetch.get("html", ""))
+    result["content"]      = analyze_content(soup, html=fetch.get("html", ""), base_url=url)
     result["images"]       = analyze_images(soup)     # kept for scoring compatibility
     result["redirect_analysis"] = analyze_redirect_chain(result["redirect_chain"])
 

@@ -154,7 +154,8 @@ def classify_link(href, base_url):
     if not href or href.startswith(("#", "mailto:", "tel:", "javascript:", "data:")):
         return None
     if href.startswith("//"):
-        href = "https:" + href
+        scheme = urlparse(base_url).scheme or "https"
+        href = scheme + ":" + href
     if not href.startswith("http"):
         return "internal"
     base_domain = get_base_domain(base_url)
@@ -170,7 +171,8 @@ def parse_link_tag(tag, base_url):
         return None
 
     if href.startswith("//"):
-        full_url = "https:" + href
+        scheme = urlparse(base_url).scheme or "https"
+        full_url = scheme + ":" + href
     elif href.startswith("http"):
         full_url = href
     else:
@@ -341,6 +343,86 @@ def audit_links(soup, base_url, validate=False):
         "internal": _summarize_internal(internal),
         "external": _summarize_external(external),
     }
+
+
+# ── Body content link highlighting ────────────────────────────────────────
+
+INTERNAL_LINK_COLOR = "#1D4ED8"   # blue  — matches internal-link brand color elsewhere
+EXTERNAL_LINK_COLOR = "#7C3AED"   # purple — matches external-link brand color elsewhere
+
+
+def linkify_paragraph_html(p_tag, base_url, max_chars=400):
+    """
+    Render a BeautifulSoup <p> tag as safe inline HTML for content previews,
+    keeping only <a> links (color-coded internal/external) and escaping all
+    other text. Every other tag is unwrapped to plain text. Output is
+    truncated to max_chars without ever leaving a tag unclosed.
+    """
+    import html as _html
+
+    frag = BeautifulSoup(str(p_tag), "lxml")
+    p_el = frag.find("p") or frag
+
+    for tag in p_el.find_all(True):
+        if tag.name != "a":
+            tag.unwrap()
+
+    budget = max_chars
+    parts, truncated = [], False
+    for node in list(p_el.contents):
+        if budget <= 0:
+            truncated = True
+            break
+        if getattr(node, "name", None) == "a":
+            href = (node.get("href") or "").strip()
+            text = node.get_text(" ", strip=True)
+            is_linkable = href and text and not href.startswith(
+                ("#", "mailto:", "tel:", "javascript:", "data:")
+            )
+            if not is_linkable:
+                clip = text[:budget]
+                if len(text) > budget:
+                    truncated = True
+                budget -= len(clip)
+                if clip:
+                    parts.append(_html.escape(clip))
+                continue
+
+            if href.startswith("//"):
+                scheme = urlparse(base_url).scheme or "https"
+                full_url = scheme + ":" + href
+            elif href.startswith(("http://", "https://")):
+                full_url = href
+            else:
+                full_url = urljoin(base_url, href)
+
+            clip = text[:budget]
+            if len(text) > budget:
+                truncated = True
+            budget -= len(clip)
+
+            kind  = classify_link(full_url, base_url) or "external"
+            color = INTERNAL_LINK_COLOR if kind == "internal" else EXTERNAL_LINK_COLOR
+            icon  = "🔵" if kind == "internal" else "🟣"
+            safe_url = _html.escape(full_url)
+            parts.append(
+                f"<a href='{safe_url}' target='_blank' rel='noopener noreferrer' "
+                f"style='color:{color};font-weight:700;text-decoration:underline;"
+                f"text-underline-offset:2px' "
+                f"title='{icon} {kind.title()} link → {safe_url}'>{_html.escape(clip)}</a>"
+            )
+        else:
+            text = str(node)
+            clip = text[:budget]
+            if len(text) > budget:
+                truncated = True
+            budget -= len(clip)
+            parts.append(_html.escape(clip))
+
+    result = "".join(parts)
+    if truncated:
+        result += "…"
+    return result
 
 
 # ── Anchor text analysis ──────────────────────────────────────────────────
