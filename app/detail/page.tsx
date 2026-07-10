@@ -30,6 +30,26 @@ function BoolBadge({ ok }: { ok: boolean }) {
   );
 }
 
+function formatValue(v: unknown): string {
+  if (v === null || v === undefined || v === "") return "—";
+  if (Array.isArray(v)) return String(v.length);
+  if (typeof v === "object") {
+    const entries = Object.entries(v as Record<string, unknown>).filter(
+      ([k]) => k !== "issues" && !k.startsWith("_"),
+    );
+    if (entries.length === 0) return "—";
+    return entries
+      .map(([k, val]) => {
+        if (Array.isArray(val)) return `${k}: ${val.length}`;
+        if (val && typeof val === "object") return `${k}: …`;
+        if (val === null || val === undefined || val === "") return `${k}: —`;
+        return `${k}: ${val}`;
+      })
+      .join(", ");
+  }
+  return String(v);
+}
+
 function KeyValueGrid({ data }: { data: Record<string, unknown> }) {
   const entries = Object.entries(data || {}).filter(
     ([k]) => k !== "issues" && !k.startsWith("_"),
@@ -44,8 +64,8 @@ function KeyValueGrid({ data }: { data: Record<string, unknown> }) {
           {typeof v === "boolean" ? (
             <BoolBadge ok={v} />
           ) : (
-            <span className="max-w-[60%] truncate text-right font-medium text-[var(--seo-subheading)]">
-              {Array.isArray(v) ? v.length : v === null || v === undefined ? "—" : String(v)}
+            <span className="max-w-[60%] truncate text-right font-medium text-[var(--seo-subheading)]" title={formatValue(v)}>
+              {formatValue(v)}
             </span>
           )}
         </div>
@@ -239,7 +259,11 @@ export default function DetailPage() {
             <h3 className="mb-3 text-sm font-semibold text-[var(--seo-subheading)]">
               Advanced / Security Headers
             </h3>
-            <KeyValueGrid data={r.advanced || {}} />
+            <KeyValueGrid
+              data={Object.fromEntries(
+                Object.entries(r.advanced || {}).filter(([k]) => k !== "technical_seo"),
+              )}
+            />
           </Card>
         </div>
       ) : null}

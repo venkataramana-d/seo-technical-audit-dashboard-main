@@ -32,7 +32,20 @@ export default function PerformancePage() {
 
   const r = results[Math.min(selectedIdx, results.length - 1)];
   const mobile = r.mobile_audit || {};
-  const cwv = livePsi?.cwv || mobile.cwv || {};
+  // /api/pagespeed (modules/pagespeed.py fetch_pagespeed) returns metrics as
+  // flat top-level fields, not nested under a "cwv" key like mobile_audit.cwv does.
+  const cwv = livePsi
+    ? {
+        ttfb: livePsi.ttfb,
+        fcp: livePsi.fcp,
+        lcp: livePsi.lcp,
+        cls: livePsi.cls,
+        tbt: livePsi.tbt,
+        si: livePsi.si,
+        inp: livePsi.inp,
+        source: livePsi.source,
+      }
+    : mobile.cwv || {};
   const imgSummary = r.image_detail?.summary || r.image_detail || {};
 
   async function fetchLivePsi() {

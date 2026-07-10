@@ -105,7 +105,15 @@ export default function DashboardPage() {
           {distData.length ? (
             <ResponsiveContainer width="100%" height={220}>
               <PieChart>
-                <Pie data={distData} dataKey="value" nameKey="name" outerRadius={80} label>
+                <Pie
+                  data={distData}
+                  dataKey="value"
+                  nameKey="name"
+                  outerRadius={80}
+                  fill="#8884d8"
+                  isAnimationActive={false}
+                  label
+                >
                   {distData.map((_, i) => (
                     <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                   ))}
