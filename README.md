@@ -1,10 +1,6 @@
 # 🔍 SEO Technical Audit Dashboard
 
-A modern, enterprise-grade Streamlit application for comprehensive SEO auditing — inspired by SEMrush, Ahrefs, Ubersuggest, and SEO Meta in 1 Click.
-
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://seo-technical-audit-dashboard-ub4xctw2yktn9smirs88ft.streamlit.app/)
-
-**Live App:** [https://seo-technical-audit-dashboard-ub4xctw2yktn9smirs88ft.streamlit.app/](https://seo-technical-audit-dashboard-ub4xctw2yktn9smirs88ft.streamlit.app/)
+An enterprise-grade SEO auditing tool — inspired by SEMrush, Ahrefs, Ubersuggest, and SEO Meta in 1 Click. Built as a Next.js frontend with Python serverless functions on Vercel.
 
 ---
 
@@ -74,37 +70,50 @@ A modern, enterprise-grade Streamlit application for comprehensive SEO auditing 
 ### Local
 
 ```bash
-git clone https://github.com/DVR79/seo-technical-audit-dashboard.git
-cd seo-technical-audit-dashboard
+git clone https://github.com/venkataramana-d/seo-technical-audit-dashboard-main.git
+cd seo-technical-audit-dashboard-main
+npm install
+python -m venv .venv && source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install -r requirements.txt
-streamlit run app.py
+npm run dev
 ```
 
-### Streamlit Cloud
+The frontend runs at `http://localhost:3000`. The `/api/*.py` functions only run
+under Vercel's runtime (or `vercel dev`) — plain `next dev` will 404 on API
+calls, which is expected for local UI-only work.
 
-1. Fork this repository
-2. Go to [share.streamlit.io](https://share.streamlit.io)
-3. Click **New app** → select this repo → set `app.py` as the main file
-4. Click **Deploy**
+### Deploy to Vercel
+
+1. Push this repo to GitHub (already done for this project).
+2. In the Vercel dashboard, import the repo as a project (or connect it to an
+   existing empty project via Settings → Git → Connect Repository).
+3. Add an environment variable `PSI_API_KEY` (optional — enables higher
+   PageSpeed Insights quota; the app works without it via the anonymous quota).
+4. Deploy. Vercel auto-detects the Next.js frontend and the Python functions
+   under `/api`.
 
 ---
 
 ## Project Structure
 
 ```
-├── app.py                      # Main Streamlit application
-├── requirements.txt            # Python dependencies
-├── assets/
-│   └── style.css               # Custom enterprise UI styles
-└── modules/
-    ├── __init__.py
-    ├── auditor.py              # Core URL audit engine
-    ├── advanced_checks.py      # SERP preview, schema, mobile, hreflang, social
-    ├── link_auditor.py         # Internal & external link analysis
-    ├── course_auditor.py       # Course-page checks
-    ├── blog_auditor.py         # Blog-page checks
-    ├── scoring.py              # SEO Health Score + thematic grouping
-    └── report_generator.py     # CSV / Excel / PDF export
+├── app/                     # Next.js App Router pages (frontend)
+├── api/                     # Vercel Python serverless functions
+│   ├── audit.py             # Runs a full audit for one URL
+│   ├── pagespeed.py         # Live PageSpeed Insights fetch
+│   ├── export.py            # CSV / Excel / PDF export
+│   └── config-status.py     # Reports whether PSI_API_KEY is set
+├── modules/                 # Audit engine (reused by api/audit.py etc.)
+│   ├── auditor.py           # Core URL audit engine
+│   ├── advanced_checks.py   # SERP preview, schema, mobile, hreflang, social
+│   ├── link_auditor.py      # Internal & external link analysis
+│   ├── course_auditor.py    # Course-page checks
+│   ├── blog_auditor.py      # Blog-page checks
+│   ├── scoring.py           # SEO Health Score + thematic grouping
+│   └── report_generator.py  # CSV / Excel / PDF export
+├── lib/                     # Client-side state, aggregation, formatting
+├── requirements.txt         # Python dependencies for /api
+└── legacy-streamlit/        # Original Streamlit app, kept for reference
 ```
 
 ---
@@ -133,14 +142,23 @@ streamlit run app.py
 
 | Library | Purpose |
 |---|---|
-| [Streamlit](https://streamlit.io) | UI framework |
+| [Next.js](https://nextjs.org) | Frontend (App Router, TypeScript, Tailwind) |
+| [Recharts](https://recharts.org) | Interactive charts |
+| Vercel Python Functions | `/api` audit, PageSpeed, and export endpoints |
 | [BeautifulSoup4](https://www.crummy.com/software/BeautifulSoup/) | HTML parsing |
 | [lxml](https://lxml.de) | Fast XML/HTML parser |
 | [Requests](https://requests.readthedocs.io) | HTTP crawling |
 | [Pandas](https://pandas.pydata.org) | Data processing |
-| [Plotly](https://plotly.com/python/) | Interactive charts |
 | [fpdf2](https://pyfpdf.github.io/fpdf2/) | PDF generation |
 | [XlsxWriter](https://xlsxwriter.readthedocs.io) | Excel export |
+
+## Scope notes
+
+This version covers single-URL audits with full detail views, link analysis,
+performance/mobile/image checks, heading analysis, and CSV/Excel/PDF export.
+Bulk audits (CSV/sitemap upload) and the multi-provider API key vault from the
+original Streamlit app are not carried over — see `legacy-streamlit/app.py` if
+you need to reference that functionality.
 
 ---
 

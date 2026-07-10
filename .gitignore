@@ -14,11 +14,24 @@ build/
 venv/
 .venv/
 env/
-.env
+.env*
 
-# Streamlit
-.streamlit/secrets.toml
-.streamlit/api_keys.json
+# Streamlit (legacy)
+legacy-streamlit/.streamlit/secrets.toml
+legacy-streamlit/.streamlit/api_keys.json
+
+# Node / Next.js
+/node_modules
+/.pnp
+.pnp.*
+/coverage
+/.next/
+/out/
+*.tsbuildinfo
+next-env.d.ts
+
+# Vercel
+.vercel
 
 # OS
 .DS_Store

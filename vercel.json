@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "api/audit.py": { "maxDuration": 60 },
+    "api/pagespeed.py": { "maxDuration": 90 },
+    "api/export.py": { "maxDuration": 30 },
+    "api/config-status.py": { "maxDuration": 10 }
+  }
+}

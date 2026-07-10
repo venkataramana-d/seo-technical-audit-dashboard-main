@@ -1,0 +1,127 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+@import "tailwindcss";
+
+/* Design tokens ported from legacy-streamlit/assets/style.css (Bento Edition) */
+:root {
+  --seo-app-bg: #F0F2F7;
+  --seo-card-bg: #FFFFFF;
+  --seo-card-bg-alt: #F8FAFC;
+  --seo-card-hover: #F1F5F9;
+  --seo-border: rgba(15, 23, 42, 0.08);
+  --seo-border-strong: rgba(15, 23, 42, 0.18);
+  --seo-shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --seo-shadow-md: 0 4px 16px rgba(15, 23, 42, 0.10), 0 1px 4px rgba(15, 23, 42, 0.06);
+  --seo-shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.14);
+
+  --seo-heading: #0F172A;
+  --seo-subheading: #1E293B;
+  --seo-text: #334155;
+  --seo-text-light: #475569;
+  --seo-muted: #94A3B8;
+  --seo-placeholder: #CBD5E1;
+
+  --seo-accent: #0369A1;
+  --seo-accent-2: #0284C7;
+  --seo-accent-light: rgba(3, 105, 161, 0.07);
+  --seo-accent-border: rgba(3, 105, 161, 0.22);
+  --seo-gradient: linear-gradient(135deg, #0F172A, #1E3A5F);
+
+  --seo-success: #059669;
+  --seo-success-bg: rgba(5, 150, 105, 0.08);
+  --seo-success-border: rgba(5, 150, 105, 0.20);
+  --seo-warning: #D97706;
+  --seo-warning-bg: rgba(217, 119, 6, 0.08);
+  --seo-warning-border: rgba(217, 119, 6, 0.20);
+  --seo-error: #DC2626;
+  --seo-error-bg: rgba(220, 38, 38, 0.08);
+  --seo-error-border: rgba(220, 38, 38, 0.20);
+  --seo-info: #0369A1;
+  --seo-info-bg: rgba(3, 105, 161, 0.07);
+  --seo-info-border: rgba(3, 105, 161, 0.18);
+
+  --sev-critical: #DC2626;
+  --sev-critical-bg: rgba(220, 38, 38, 0.08);
+  --sev-high: #EA580C;
+  --sev-high-bg: rgba(234, 88, 12, 0.08);
+  --sev-warning: #D97706;
+  --sev-warning-bg: rgba(217, 119, 6, 0.08);
+  --sev-medium: #CA8A04;
+  --sev-medium-bg: rgba(202, 138, 4, 0.08);
+  --sev-low: #0369A1;
+  --sev-low-bg: rgba(3, 105, 161, 0.08);
+
+  --cwv-good-bg: rgba(5, 150, 105, 0.09);
+  --cwv-good-text: #065F46;
+  --cwv-needs-bg: rgba(217, 119, 6, 0.09);
+  --cwv-needs-text: #92400E;
+  --cwv-poor-bg: rgba(220, 38, 38, 0.09);
+  --cwv-poor-text: #991B1B;
+
+  --table-header-bg: #F8FAFC;
+  --table-row-border: rgba(15, 23, 42, 0.06);
+  --table-row-hover: rgba(3, 105, 161, 0.03);
+
+  --seo-banner-bg: linear-gradient(135deg, #0F172A 0%, #1E3A5F 100%);
+  --seo-banner-text: #F1F5F9;
+  --seo-banner-muted: #94A3B8;
+}
+
+@theme inline {
+  --color-app-bg: var(--seo-app-bg);
+  --color-card: var(--seo-card-bg);
+  --color-card-alt: var(--seo-card-bg-alt);
+  --color-card-hover: var(--seo-card-hover);
+  --color-border: var(--seo-border);
+  --color-border-strong: var(--seo-border-strong);
+
+  --color-heading: var(--seo-heading);
+  --color-subheading: var(--seo-subheading);
+  --color-body: var(--seo-text);
+  --color-body-light: var(--seo-text-light);
+  --color-muted: var(--seo-muted);
+
+  --color-accent: var(--seo-accent);
+  --color-accent-2: var(--seo-accent-2);
+  --color-accent-light: var(--seo-accent-light);
+  --color-accent-border: var(--seo-accent-border);
+
+  --color-success: var(--seo-success);
+  --color-success-bg: var(--seo-success-bg);
+  --color-warning: var(--seo-warning);
+  --color-warning-bg: var(--seo-warning-bg);
+  --color-error: var(--seo-error);
+  --color-error-bg: var(--seo-error-bg);
+  --color-info: var(--seo-info);
+  --color-info-bg: var(--seo-info-bg);
+
+  --color-sev-critical: var(--sev-critical);
+  --color-sev-critical-bg: var(--sev-critical-bg);
+  --color-sev-high: var(--sev-high);
+  --color-sev-high-bg: var(--sev-high-bg);
+  --color-sev-warning: var(--sev-warning);
+  --color-sev-warning-bg: var(--sev-warning-bg);
+  --color-sev-medium: var(--sev-medium);
+  --color-sev-medium-bg: var(--sev-medium-bg);
+  --color-sev-low: var(--sev-low);
+  --color-sev-low-bg: var(--sev-low-bg);
+
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+body {
+  background: var(--seo-app-bg);
+  color: var(--seo-text);
+  font-family: var(--font-sans);
+}
+
+.card {
+  background: var(--seo-card-bg);
+  border: 1px solid var(--seo-border);
+  border-radius: 0.75rem;
+  box-shadow: var(--seo-shadow-sm);
+}
+
+.banner {
+  background: var(--seo-banner-bg);
+  color: var(--seo-banner-text);
+}
