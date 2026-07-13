@@ -306,6 +306,7 @@ function ImageSeoTab({ results, showSource }: { results: AuditResult[]; showSour
   const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
   const [lcpOnly, setLcpOnly] = useState(false);
   const [issueOnly, setIssueOnly] = useState(false);
+  const [brokenOnly, setBrokenOnly] = useState(false);
   const [sort, setSort] = useState<{ key: ImageSort; dir: 1 | -1 }>({ key: "priority", dir: -1 });
   const [expanded, setExpanded] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -316,6 +317,7 @@ function ImageSeoTab({ results, showSource }: { results: AuditResult[]; showSour
   // matches modules/image_auditor.py's own exclusion of the LCP image from
   // the lazy-loading complaint — that image correctly should NOT be lazy.
   const noLazy = images.filter((i) => i.issues.includes("Missing lazy loading")).length;
+  const brokenImages = images.filter((i) => i.is_broken === true).length;
   const formatOpportunities = images.filter((i) => i.issues.includes("Could be converted to WebP/AVIF"));
   const duplicateAlt = (() => {
     const seen = new Map<string, number>();
@@ -337,9 +339,10 @@ function ImageSeoTab({ results, showSource }: { results: AuditResult[]; showSour
       if (formatFilter !== "all" && img.format_label !== formatFilter) return false;
       if (lcpOnly && !img.is_lcp_candidate) return false;
       if (issueOnly && img.issues.length === 0) return false;
+      if (brokenOnly && img.is_broken !== true) return false;
       return true;
     });
-  }, [withPriority, altFilter, formatFilter, lcpOnly, issueOnly]);
+  }, [withPriority, altFilter, formatFilter, lcpOnly, issueOnly, brokenOnly]);
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
@@ -383,7 +386,7 @@ function ImageSeoTab({ results, showSource }: { results: AuditResult[]; showSour
 
   function downloadView() {
     const rows: string[][] = [
-      ["Name", "Source Page", "Format", "Alt Status", "Alt Text", "Dimensions", "Lazy", "File Size", "LCP Candidate", "Issues"],
+      ["Name", "Source Page", "Format", "Alt Status", "Alt Text", "Dimensions", "Lazy", "File Size", "Broken", "LCP Candidate", "Issues"],
     ];
     const subset = selected.size > 0 ? sorted.filter((_, i) => selected.has(i)) : sorted;
     for (const img of subset) {
@@ -396,6 +399,7 @@ function ImageSeoTab({ results, showSource }: { results: AuditResult[]; showSour
         img.has_dimensions ? `${img.width}×${img.height}` : "—",
         img.has_lazy ? "Yes" : "No",
         formatBytes(img.file_size_bytes),
+        img.is_broken ? `Yes (${img.status_code ?? img.fetch_error ?? "unreachable"})` : "No",
         img.is_lcp_candidate ? "Yes" : "No",
         img.issues.join("; "),
       ]);
@@ -412,6 +416,7 @@ function ImageSeoTab({ results, showSource }: { results: AuditResult[]; showSour
         <MetricCard label="Missing Lazy Load" value={noLazy} />
         <MetricCard label="Duplicate Alt Text" value={duplicateAlt} />
         <MetricCard label="Format Upgrade Candidates" value={formatOpportunities.length} />
+        <MetricCard label="Broken Images" value={brokenImages} onClick={() => setBrokenOnly(true)} />
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -481,6 +486,10 @@ function ImageSeoTab({ results, showSource }: { results: AuditResult[]; showSour
             <input type="checkbox" checked={issueOnly} onChange={(e) => setIssueOnly(e.target.checked)} />
             Has issues only
           </label>
+          <label className="flex items-center gap-1.5 text-xs text-[var(--seo-text-light)]">
+            <input type="checkbox" checked={brokenOnly} onChange={(e) => setBrokenOnly(e.target.checked)} />
+            Broken only
+          </label>
           <span className="text-xs text-[var(--seo-muted)]">{sorted.length} image(s)</span>
           <button
             onClick={downloadView}
@@ -535,6 +544,15 @@ function ImageSeoTab({ results, showSource }: { results: AuditResult[]; showSour
                       {img.name || "(unnamed)"}
                       {img.is_lcp_candidate ? (
                         <span className="ml-1 rounded-full bg-[var(--seo-accent-light)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--seo-accent)]">LCP</span>
+                      ) : null}
+                      {img.is_broken ? (
+                        <span
+                          className="ml-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold"
+                          style={{ color: "var(--seo-error)", backgroundColor: "var(--seo-error-bg)" }}
+                          title={img.fetch_error || (img.status_code ? `HTTP ${img.status_code}` : "Unreachable")}
+                        >
+                          Broken
+                        </span>
                       ) : null}
                     </td>
                     {showSource ? (

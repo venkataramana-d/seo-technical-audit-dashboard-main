@@ -127,7 +127,9 @@ _BROWSER_HEADERS = {
 
 def _fetch_size(url, referer=None):
     """
-    Fetch image file size in bytes. Returns (url, size_bytes or None).
+    Fetch image file size and reachability.
+    Returns (url, size_bytes_or_None, status_info) where status_info is
+    {"reachable": bool, "status_code": int|None, "error": str|None}.
 
     Strategy:
     1. HEAD — fast, no body download.
@@ -135,7 +137,7 @@ def _fetch_size(url, referer=None):
     3. Streaming GET — reads only response headers, no body download.
     """
     if not REQUESTS_AVAILABLE:
-        return url, None
+        return url, None, {"reachable": None, "status_code": None, "error": "requests unavailable"}
     hdrs = dict(_BROWSER_HEADERS)
     if referer:
         hdrs["Referer"] = referer
@@ -158,34 +160,49 @@ def _fetch_size(url, referer=None):
         if r.status_code < 400:
             sz = _cl(r.headers)
             if sz:
-                return url, sz
+                return url, sz, {"reachable": True, "status_code": r.status_code, "error": None}
 
         # ── 2. Range GET ──────────────────────────────────────────────────
         r2 = _get(requests.get, url, timeout=10, allow_redirects=True,
                   headers={**hdrs, "Range": "bytes=0-1"}, stream=True)
         r2.close()
         if r2.status_code in (200, 206):
+            status2 = {"reachable": True, "status_code": r2.status_code, "error": None}
             cr = r2.headers.get("Content-Range", "")
             if "/" in cr:
                 total = cr.split("/")[-1].strip()
                 if total.isdigit() and int(total) > 1:
-                    return url, int(total)
+                    return url, int(total), status2
             sz = _cl(r2.headers)
             if sz:
-                return url, sz
+                return url, sz, status2
 
         # ── 3. Streaming GET (headers only, no body) ──────────────────────
         r3 = _get(requests.get, url, timeout=10, allow_redirects=True,
                   headers=hdrs, stream=True)
         r3.close()
-        if r3.status_code == 200:
+        # Use the LAST attempted status code for reachability — a 200 here
+        # means the image is fine even if size couldn't be determined; a 4xx/5xx
+        # across every attempt means the image genuinely doesn't load.
+        final_code = r3.status_code
+        reachable = final_code < 400
+        if reachable:
             sz = _cl(r3.headers)
             if sz:
-                return url, sz
-
-        return url, None
-    except Exception:
-        return url, None
+                return url, sz, {"reachable": True, "status_code": final_code, "error": None}
+        return url, None, {
+            "reachable": reachable,
+            "status_code": final_code,
+            "error": None if reachable else f"HTTP {final_code}",
+        }
+    except requests.exceptions.Timeout:
+        return url, None, {"reachable": False, "status_code": None, "error": "Timeout"}
+    except requests.exceptions.SSLError:
+        return url, None, {"reachable": False, "status_code": None, "error": "SSL Error"}
+    except requests.exceptions.ConnectionError:
+        return url, None, {"reachable": False, "status_code": None, "error": "Connection Error"}
+    except Exception as e:
+        return url, None, {"reachable": False, "status_code": None, "error": str(e)[:60]}
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +292,9 @@ def _extract_image_data(soup, base_url):
             "naming_quality": nq,
             "file_size_bytes": None,
             "file_size_label": "—",
+            "status_code": None,
+            "is_broken": None,
+            "fetch_error": None,
             "is_lcp_candidate": False,
             "issues": per_image_issues,
         })
@@ -309,8 +329,8 @@ def _mark_lcp_candidate(images):
 
 def _populate_sizes(images, max_size_checks, base_url=""):
     """
-    Make HEAD requests for up to max_size_checks unique image URLs
-    and populate file_size_bytes / file_size_label.
+    Make HEAD requests for up to max_size_checks unique image URLs and
+    populate file_size_bytes / file_size_label / is_broken / status_code.
     """
     if not REQUESTS_AVAILABLE:
         return
@@ -328,14 +348,20 @@ def _populate_sizes(images, max_size_checks, base_url=""):
     with ThreadPoolExecutor(max_workers=10) as executor:
         results = list(executor.map(_fetch, to_check))
 
-    size_map = {url: size for url, size in results}
+    status_map = {url: (size, status) for url, size, status in results}
 
     for img in images:
         url = img["url"]
-        if url in size_map:
-            size_bytes = size_map[url]
+        if url in status_map:
+            size_bytes, status = status_map[url]
             img["file_size_bytes"] = size_bytes
             img["file_size_label"] = _file_size_label(size_bytes)
+            img["status_code"] = status.get("status_code")
+            img["is_broken"] = status.get("reachable") is False
+            img["fetch_error"] = status.get("error")
+
+            if img["is_broken"] and "Broken image (does not load)" not in img["issues"]:
+                img["issues"].append("Broken image (does not load)")
             # Update large image issue flag
             if size_bytes is not None and size_bytes > 200 * 1024:
                 if "Large file size (> 200KB)" not in img["issues"]:
@@ -362,11 +388,13 @@ def _compute_summary(images, check_sizes):
     duplicate_alt = sum(1 for count in alt_counter.values() if count > 1)
 
     large_images = 0
+    broken_images = 0
     if check_sizes:
         large_images = sum(
             1 for i in images
             if i["file_size_bytes"] is not None and i["file_size_bytes"] > 200 * 1024
         )
+        broken_images = sum(1 for i in images if i.get("is_broken") is True)
 
     format_breakdown = defaultdict(int)
     for img in images:
@@ -384,6 +412,7 @@ def _compute_summary(images, check_sizes):
         "non_webp_jpg_png": non_webp,
         "bad_naming": bad_naming,
         "large_images": large_images,
+        "broken_images": broken_images,
         "format_breakdown": dict(format_breakdown),
     }
 
@@ -483,6 +512,16 @@ def _build_issues(summary, check_sizes):
             "effort": "Medium",
         })
 
+    if check_sizes and n.get("broken_images", 0) > 0:
+        issues.append({
+            "issue": f"{n['broken_images']} image(s) fail to load",
+            "category": "Image SEO",
+            "severity": "Critical",
+            "recommendation": "Fix or remove broken image references — check the URL is correct and the file still exists on the server.",
+            "impact_score": 9,
+            "effort": "Low",
+        })
+
     if check_sizes and n["large_images"] > 0:
         issues.append({
             "issue": f"{n['large_images']} image(s) are larger than 200KB",
@@ -559,4 +598,5 @@ def analyze_images_advanced(soup, base_url="", check_sizes=False, max_size_check
         "non_webp_jpg_png": summary["non_webp_jpg_png"],
         "bad_naming": summary["bad_naming"],
         "large_images": summary["large_images"],
+        "broken_images": summary["broken_images"],
     }

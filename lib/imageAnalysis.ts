@@ -17,6 +17,9 @@ export interface ImageEntry {
   naming_quality: "good" | "bad";
   file_size_bytes: number | null;
   file_size_label: string;
+  status_code: number | null;
+  is_broken: boolean | null;
+  fetch_error: string | null;
   is_lcp_candidate: boolean;
   issues: string[];
   sourceUrl: string;
@@ -170,6 +173,17 @@ export function explainImageIssue(issue: string, img: ImageEntry): ImageIssueExp
         recommendedFix: "Re-export as WebP or AVIF, or serve via a <picture> element with a WebP/AVIF source and a JPEG/PNG fallback.",
         htmlExample: `<picture>\n  <source srcset="${img.name.replace(/\.[^.]+$/, ".webp")}" type="image/webp">\n  <img src="${img.url}" alt="...">\n</picture>`,
       };
+    case "Broken image (does not load)":
+      return {
+        issueName: "Broken Image",
+        status: "critical",
+        severity: "Critical",
+        whatIsIt: `"${name}" doesn't load${img.fetch_error ? ` — ${img.fetch_error}` : img.status_code ? ` — server responded ${img.status_code}` : ""}.`,
+        whyImportant: "A broken image shows as a blank box or broken-icon placeholder to every visitor, and search engine crawlers waste crawl budget requesting a resource that fails.",
+        seoImpact: "Broken images can't appear in Google Image Search, hurt perceived page quality, and repeated 4xx/5xx image requests waste crawl budget on larger sites.",
+        userImpact: "Visitors see a blank/broken placeholder instead of the intended image, which looks unpolished and can undermine trust.",
+        recommendedFix: "Check the URL is correct and the file still exists on the server. Fix the path/hosting, or remove the <img> reference if the asset is gone for good.",
+      };
     case "Large file size (> 200KB)":
       return {
         issueName: "Large File Size",
@@ -188,6 +202,7 @@ export function explainImageIssue(issue: string, img: ImageEntry): ImageIssueExp
 
 export function imagePriorityScore(img: ImageEntry): number {
   let score = 0;
+  if (img.is_broken) score += 50;
   if (img.issues.includes("Large file size (> 200KB)")) score += 40;
   if (img.issues.includes("Missing alt text")) score += 30;
   if (img.issues.includes("Missing width/height dimensions")) score += 20;

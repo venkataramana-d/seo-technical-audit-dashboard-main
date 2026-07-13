@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import { useAudit } from "@/lib/state/AuditContext";
-import { Card, EmptyState, IssueRow, MetricCard, PageHeader } from "@/components/ui";
+import { Card, EmptyState, MetricCard, PageHeader } from "@/components/ui";
 import { downloadCsv } from "@/lib/format";
 import type { Issue } from "@/lib/types";
+import { explainHeadingIssue, STATUS_COLOR_HEX } from "@/lib/headingAnalysis";
 
 const TABS = ["Hierarchy Tree", "Heading List", "H1 Across Site", "Issues"] as const;
 type Tab = (typeof TABS)[number];
@@ -22,6 +23,7 @@ export default function HeadingsPage() {
   const { results } = useAudit();
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [tab, setTab] = useState<Tab>("Hierarchy Tree");
+  const [expandedIssue, setExpandedIssue] = useState<number | null>(null);
 
   if (results.length === 0) {
     return (
@@ -177,9 +179,63 @@ export default function HeadingsPage() {
 
       {tab === "Issues" ? (
         <Card>
-          {issues.map((issue, i) => (
-            <IssueRow key={i} issue={issue} />
-          ))}
+          {issues.map((issue, i) => {
+            const isExpanded = expandedIssue === i;
+            const explanation = explainHeadingIssue(issue);
+            const color = STATUS_COLOR_HEX[explanation.status];
+            return (
+              <div key={i} className="border-b border-[var(--seo-border)] py-3 last:border-0">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex flex-1 items-center gap-2">
+                    <span
+                      className="rounded-full px-2 py-0.5 text-xs font-semibold"
+                      style={{ color, backgroundColor: `${color}18` }}
+                    >
+                      {issue.severity}
+                    </span>
+                    <span className="text-sm text-[var(--seo-text)]">{issue.issue}</span>
+                  </div>
+                  <button
+                    onClick={() => setExpandedIssue(isExpanded ? null : i)}
+                    className="shrink-0 text-xs font-medium text-[var(--seo-accent)] hover:underline"
+                  >
+                    {isExpanded ? "Hide" : "Details"}
+                  </button>
+                </div>
+                {isExpanded ? (
+                  <div className="mt-3 flex flex-col gap-3 rounded-lg bg-[var(--seo-card-alt)] p-3 text-sm">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div>
+                        <h5 className="text-xs font-semibold uppercase tracking-wide text-[var(--seo-muted)]">What is it?</h5>
+                        <p className="text-[var(--seo-text)]">{explanation.whatIsIt}</p>
+                      </div>
+                      <div>
+                        <h5 className="text-xs font-semibold uppercase tracking-wide text-[var(--seo-muted)]">Why is it important?</h5>
+                        <p className="text-[var(--seo-text)]">{explanation.whyImportant}</p>
+                      </div>
+                      <div>
+                        <h5 className="text-xs font-semibold uppercase tracking-wide text-[var(--seo-muted)]">SEO Impact</h5>
+                        <p className="text-[var(--seo-text)]">{explanation.seoImpact}</p>
+                      </div>
+                      <div>
+                        <h5 className="text-xs font-semibold uppercase tracking-wide text-[var(--seo-muted)]">User Impact</h5>
+                        <p className="text-[var(--seo-text)]">{explanation.userImpact}</p>
+                      </div>
+                    </div>
+                    <div>
+                      <h5 className="text-xs font-semibold uppercase tracking-wide text-[var(--seo-muted)]">Recommended Fix</h5>
+                      <p className="text-[var(--seo-text)]">{explanation.recommendedFix}</p>
+                      {explanation.htmlExample ? (
+                        <pre className="mt-1 overflow-x-auto rounded-lg bg-[var(--seo-card-hover)] p-2 text-xs text-[var(--seo-subheading)]">
+                          {explanation.htmlExample}
+                        </pre>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
           {issues.length === 0 ? (
             <div className="py-4 text-sm text-[var(--seo-muted)]">No heading issues found.</div>
           ) : null}
