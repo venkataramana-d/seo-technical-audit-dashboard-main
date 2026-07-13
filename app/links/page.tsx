@@ -1,11 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useAudit } from "@/lib/state/AuditContext";
 import { Card, EmptyState, MetricCard, PageHeader } from "@/components/ui";
 import {
   anchorTextDistribution,
   buildExecutiveSummary,
+  duplicateAnchors,
+  explainLink,
   externalDomainBreakdown,
   flattenLinks,
   flattenSpecialLinks,
@@ -14,8 +16,11 @@ import {
   orphanAndLowLinkPages,
   priorityScore,
   securityGaps,
+  STATUS_COLOR_HEX,
+  STATUS_COLOR_LABEL,
   type LinkEntry,
   type SpecialLinkEntry,
+  type StatusColor,
 } from "@/lib/linkAnalysis";
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 
@@ -67,6 +72,7 @@ export default function LinkAnalysisPage() {
   const allLinks = useMemo(() => [...internal, ...external], [internal, external]);
   const specialLinks = useMemo(() => flattenSpecialLinks(results), [results]);
   const anchorDist = useMemo(() => anchorTextDistribution(allLinks), [allLinks]);
+  const dupAnchors = useMemo(() => duplicateAnchors(allLinks), [allLinks]);
   const { orphan, lowLink } = useMemo(() => orphanAndLowLinkPages(results), [results]);
   const domainStats = useMemo(() => externalDomainBreakdown(external), [external]);
   const health = useMemo(() => linkHealthCounts(allLinks), [allLinks]);
@@ -90,6 +96,26 @@ export default function LinkAnalysisPage() {
   function goToTab(t: Tab, filter?: { health?: HealthFilter; follow?: FollowFilter }) {
     setLinkFilter(filter || {});
     setTab(t);
+  }
+
+  function downloadLinkReport(name: string, subset: LinkEntry[]) {
+    const rows: string[][] = [
+      ["URL", "Source Page", "Anchor Text", "Type", "Location", "Follow", "Health", "Status Code", "Response Time (ms)"],
+    ];
+    for (const l of subset) {
+      rows.push([
+        l.url,
+        l.sourceUrl,
+        l.anchor_text,
+        l.link_category || "page",
+        l.location || "body",
+        l.is_dofollow ? "Dofollow" : "Nofollow",
+        l.health || "unknown",
+        String(l.status_code ?? ""),
+        String(l.response_time_ms ?? ""),
+      ]);
+    }
+    downloadCsv(`${name}.csv`, rows);
   }
 
   const healthData = [
@@ -178,6 +204,61 @@ export default function LinkAnalysisPage() {
               </div>
             </div>
           </Card>
+
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <Card>
+              <h3 className="mb-2 text-sm font-semibold text-[var(--seo-subheading)]">Quick Reports</h3>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => downloadLinkReport("broken-link-report", allLinks.filter((l) => l.is_broken))}
+                  className="rounded-lg border border-[var(--seo-border-strong)] px-3 py-1.5 text-xs font-medium hover:bg-[var(--seo-card-hover)]"
+                >
+                  Broken Link Report ({health.broken})
+                </button>
+                <button
+                  onClick={() => downloadLinkReport("redirect-report", allLinks.filter((l) => l.is_redirect))}
+                  className="rounded-lg border border-[var(--seo-border-strong)] px-3 py-1.5 text-xs font-medium hover:bg-[var(--seo-card-hover)]"
+                >
+                  Redirect Report ({health.redirect})
+                </button>
+                <button
+                  onClick={() => downloadLinkReport("internal-link-report", internal)}
+                  className="rounded-lg border border-[var(--seo-border-strong)] px-3 py-1.5 text-xs font-medium hover:bg-[var(--seo-card-hover)]"
+                >
+                  Internal Link Report ({internal.length})
+                </button>
+                <button
+                  onClick={() => downloadLinkReport("external-link-report", external)}
+                  className="rounded-lg border border-[var(--seo-border-strong)] px-3 py-1.5 text-xs font-medium hover:bg-[var(--seo-card-hover)]"
+                >
+                  External Link Report ({external.length})
+                </button>
+                <button
+                  onClick={() => downloadLinkReport("link-behavior-report", gaps)}
+                  className="rounded-lg border border-[var(--seo-border-strong)] px-3 py-1.5 text-xs font-medium hover:bg-[var(--seo-card-hover)]"
+                >
+                  Link Behavior Report ({gaps.length})
+                </button>
+                <button
+                  onClick={() => downloadLinkReport("complete-link-analysis-report", allLinks)}
+                  className="rounded-lg bg-[var(--seo-accent)] px-3 py-1.5 text-xs font-semibold text-white"
+                >
+                  Complete Report ({allLinks.length})
+                </button>
+              </div>
+            </Card>
+            <Card>
+              <h3 className="mb-2 text-sm font-semibold text-[var(--seo-subheading)]">Status Legend</h3>
+              <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs text-[var(--seo-text)]">
+                {(Object.keys(STATUS_COLOR_LABEL) as StatusColor[]).map((k) => (
+                  <span key={k}>{STATUS_COLOR_LABEL[k]}</span>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-[var(--seo-muted)]">
+                Consistent across KPI cards, tables, and exports throughout Link Analysis.
+              </p>
+            </Card>
+          </div>
 
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
             <MetricCard label="Internal Links" value={internal.length} onClick={() => goToTab("Internal Links")} />
@@ -307,34 +388,54 @@ export default function LinkAnalysisPage() {
       {tab === "Special Links" ? <SpecialLinksTable links={specialLinks} showSource={results.length > 1} /> : null}
 
       {tab === "Anchor Text" ? (
-        <Card className="overflow-x-auto p-0">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-[var(--seo-border)] bg-[var(--table-header-bg)] text-left text-xs uppercase tracking-wide text-[var(--seo-muted)]">
-                <th className="px-4 py-3">Anchor Text</th>
-                <th className="px-4 py-3">Count</th>
-                <th className="px-4 py-3">% of Links</th>
-                <th className="px-4 py-3" />
-              </tr>
-            </thead>
-            <tbody>
-              {anchorDist.map((a, i) => (
-                <tr key={i} className="border-b border-[var(--table-row-border)]">
-                  <td className="px-4 py-3">{a.anchor}</td>
-                  <td className="px-4 py-3">{a.count}</td>
-                  <td className="px-4 py-3">{a.pct}%</td>
-                  <td className="px-4 py-3">
-                    {a.isWeak ? (
-                      <span className="rounded-full bg-[var(--seo-warning-bg)] px-2 py-0.5 text-xs font-medium text-[var(--seo-warning)]">
-                        Weak
-                      </span>
-                    ) : null}
-                  </td>
-                </tr>
+        <div className="flex flex-col gap-4">
+          <Card>
+            <h3 className="mb-2 text-sm font-semibold text-[var(--seo-subheading)]">
+              Duplicate Anchors ({dupAnchors.length})
+            </h3>
+            <p className="mb-2 text-xs text-[var(--seo-text-light)]">
+              Same anchor text used for links pointing to different destinations — confusing for users
+              and dilutes the relevance signal each destination gets from that phrase.
+            </p>
+            <div className="flex flex-col gap-2">
+              {dupAnchors.slice(0, 15).map((d, i) => (
+                <div key={i} className="border-b border-[var(--seo-border)] pb-2 text-sm last:border-0">
+                  <span className="font-medium text-[var(--seo-subheading)]">&quot;{d.anchor}&quot;</span>
+                  <span className="ml-2 text-xs text-[var(--seo-muted)]">→ {d.destinations.length} different destinations</span>
+                </div>
               ))}
-            </tbody>
-          </table>
-        </Card>
+              {dupAnchors.length === 0 ? <p className="text-sm text-[var(--seo-muted)]">None found.</p> : null}
+            </div>
+          </Card>
+          <Card className="overflow-x-auto p-0">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-[var(--seo-border)] bg-[var(--table-header-bg)] text-left text-xs uppercase tracking-wide text-[var(--seo-muted)]">
+                  <th className="px-4 py-3">Anchor Text</th>
+                  <th className="px-4 py-3">Count</th>
+                  <th className="px-4 py-3">% of Links</th>
+                  <th className="px-4 py-3" />
+                </tr>
+              </thead>
+              <tbody>
+                {anchorDist.map((a, i) => (
+                  <tr key={i} className="border-b border-[var(--table-row-border)]">
+                    <td className="px-4 py-3">{a.anchor}</td>
+                    <td className="px-4 py-3">{a.count}</td>
+                    <td className="px-4 py-3">{a.pct}%</td>
+                    <td className="px-4 py-3">
+                      {a.isWeak ? (
+                        <span className="rounded-full bg-[var(--seo-warning-bg)] px-2 py-0.5 text-xs font-medium text-[var(--seo-warning)]">
+                          Weak
+                        </span>
+                      ) : null}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+        </div>
       ) : null}
 
       {tab === "Opportunities" ? (
@@ -407,10 +508,18 @@ function LinkTable({
   const [followFilter, setFollowFilter] = useState<FollowFilter>(initialFilter.follow || "all");
   const [healthFilter, setHealthFilter] = useState<HealthFilter>(initialFilter.health || "all");
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
   const [showDetails, setShowDetails] = useState(false);
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "priority", dir: -1 });
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [expanded, setExpanded] = useState<number | null>(null);
+
+  const statusCodes = useMemo(() => {
+    const codes = new Set<number>();
+    for (const l of links) if (l.status_code != null) codes.add(l.status_code);
+    return [...codes].sort((a, b) => a - b);
+  }, [links]);
 
   const withPriority = useMemo(
     () =>
@@ -431,9 +540,10 @@ function LinkTable({
       if (healthFilter === "redirect" && !l.is_redirect) return false;
       if (healthFilter === "ok" && (l.is_broken || l.is_redirect)) return false;
       if (categoryFilter !== "all" && (l.link_category || "page") !== categoryFilter) return false;
+      if (statusFilter !== "all" && String(l.status_code) !== statusFilter) return false;
       return true;
     });
-  }, [withPriority, search, followFilter, healthFilter, categoryFilter]);
+  }, [withPriority, search, followFilter, healthFilter, categoryFilter, statusFilter]);
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
@@ -557,6 +667,23 @@ function LinkTable({
             <option value="download">Download</option>
             <option value="image">Image</option>
           </select>
+          {statusCodes.length > 0 ? (
+            <select
+              value={statusFilter}
+              onChange={(e) => {
+                setStatusFilter(e.target.value);
+                setPage(0);
+              }}
+              className="rounded-lg border border-[var(--seo-border-strong)] px-3 py-1.5 text-sm"
+            >
+              <option value="all">All HTTP status</option>
+              {statusCodes.map((c) => (
+                <option key={c} value={String(c)}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          ) : null}
           <label className="flex items-center gap-1.5 text-xs text-[var(--seo-text-light)]">
             <input type="checkbox" checked={showDetails} onChange={(e) => setShowDetails(e.target.checked)} />
             Show technical details
@@ -614,13 +741,17 @@ function LinkTable({
                 </>
               ) : null}
               <th className="px-4 py-3">Flags</th>
+              <th className="px-4 py-3" />
             </tr>
           </thead>
           <tbody>
             {pageLinks.map((l, i) => {
               const secGap = l.opens_new_tab && (!l.has_noopener || !l.has_noreferrer);
+              const explanation = explainLink(l, kind);
+              const isExpanded = expanded === i;
               return (
-                <tr key={i} className="border-b border-[var(--table-row-border)]">
+                <Fragment key={i}>
+                <tr className="border-b border-[var(--table-row-border)]">
                   <td className="px-3 py-3">
                     <input type="checkbox" checked={selected.has(i)} onChange={() => toggleSelect(i)} />
                   </td>
@@ -679,12 +810,28 @@ function LinkTable({
                       ) : null}
                     </div>
                   </td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => setExpanded(isExpanded ? null : i)}
+                      className="text-xs font-medium text-[var(--seo-accent)] hover:underline"
+                    >
+                      {isExpanded ? "Hide" : "Details"}
+                    </button>
+                  </td>
                 </tr>
+                {isExpanded ? (
+                  <tr className="border-b border-[var(--table-row-border)] bg-[var(--seo-card-alt)]">
+                    <td colSpan={20} className="px-4 py-4">
+                      <IssueDetail explanation={explanation} link={l} />
+                    </td>
+                  </tr>
+                ) : null}
+                </Fragment>
               );
             })}
             {pageLinks.length === 0 ? (
               <tr>
-                <td colSpan={showSource ? (showDetails ? 12 : 8) : showDetails ? 11 : 7} className="px-4 py-6 text-center text-[var(--seo-muted)]">
+                <td colSpan={20} className="px-4 py-6 text-center text-[var(--seo-muted)]">
                   No links match this filter.
                 </td>
               </tr>
@@ -717,6 +864,72 @@ function LinkTable({
           </div>
         ) : null}
       </Card>
+    </div>
+  );
+}
+
+function IssueDetail({
+  explanation,
+  link,
+}: {
+  explanation: ReturnType<typeof explainLink>;
+  link: LinkEntry;
+}) {
+  const color = STATUS_COLOR_HEX[explanation.status];
+  return (
+    <div className="flex flex-col gap-3 text-sm">
+      <div className="flex items-center gap-2">
+        <span
+          className="rounded-full px-2 py-0.5 text-xs font-semibold"
+          style={{ color, backgroundColor: `${color}18` }}
+        >
+          {explanation.issueName}
+        </span>
+        <span className="text-xs text-[var(--seo-muted)]">Severity: {explanation.severity}</span>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <h5 className="text-xs font-semibold uppercase tracking-wide text-[var(--seo-muted)]">What is it?</h5>
+          <p className="text-[var(--seo-text)]">{explanation.whatIsIt}</p>
+        </div>
+        <div>
+          <h5 className="text-xs font-semibold uppercase tracking-wide text-[var(--seo-muted)]">Why is it important?</h5>
+          <p className="text-[var(--seo-text)]">{explanation.whyImportant}</p>
+        </div>
+        <div>
+          <h5 className="text-xs font-semibold uppercase tracking-wide text-[var(--seo-muted)]">Root Cause</h5>
+          <p className="text-[var(--seo-text)]">{explanation.rootCause}</p>
+        </div>
+        <div>
+          <h5 className="text-xs font-semibold uppercase tracking-wide text-[var(--seo-muted)]">Technical Details</h5>
+          <p className="text-[var(--seo-text)]">
+            Status {link.status_code ?? "—"} · {link.response_time_ms != null ? `${link.response_time_ms} ms` : "not timed"}
+            {link.redirect_path && link.redirect_path.length > 1 ? (
+              <>
+                <br />
+                Redirect path: {link.redirect_path.join(" → ")}
+              </>
+            ) : null}
+          </p>
+        </div>
+        <div>
+          <h5 className="text-xs font-semibold uppercase tracking-wide text-[var(--seo-muted)]">SEO Impact</h5>
+          <p className="text-[var(--seo-text)]">{explanation.seoImpact}</p>
+        </div>
+        <div>
+          <h5 className="text-xs font-semibold uppercase tracking-wide text-[var(--seo-muted)]">User Impact</h5>
+          <p className="text-[var(--seo-text)]">{explanation.userImpact}</p>
+        </div>
+      </div>
+      <div>
+        <h5 className="text-xs font-semibold uppercase tracking-wide text-[var(--seo-muted)]">Recommended Fix</h5>
+        <p className="text-[var(--seo-text)]">{explanation.recommendedFix}</p>
+        {explanation.htmlExample ? (
+          <pre className="mt-1 overflow-x-auto rounded-lg bg-[var(--seo-card-hover)] p-2 text-xs text-[var(--seo-subheading)]">
+            {explanation.htmlExample}
+          </pre>
+        ) : null}
+      </div>
     </div>
   );
 }

@@ -19,6 +19,7 @@ export interface LinkEntry {
   missing_target?: boolean;
   is_weak_anchor?: boolean;
   status_code?: number | null;
+  status_label?: string;
   redirect_path?: string[] | null;
   response_time_ms?: number | null;
   content_type?: string | null;
@@ -253,4 +254,155 @@ export function buildExecutiveSummary(
     quickWins,
     topPriorityFixes,
   };
+}
+
+// ── Color coding system (consistent across dashboard, tables, filters, exports) ──
+export type StatusColor = "passed" | "info" | "warning" | "high" | "critical" | "ignored";
+
+export const STATUS_COLOR_HEX: Record<StatusColor, string> = {
+  passed: "#10B981",
+  info: "#0369A1",
+  warning: "#D97706",
+  high: "#EA580C",
+  critical: "#DC2626",
+  ignored: "#94A3B8",
+};
+
+export const STATUS_COLOR_LABEL: Record<StatusColor, string> = {
+  passed: "🟢 Passed",
+  info: "🔵 Information",
+  warning: "🟡 Warning",
+  high: "🟠 High Priority",
+  critical: "🔴 Critical",
+  ignored: "⚪ Ignored",
+};
+
+export interface LinkExplanation {
+  issueName: string;
+  status: StatusColor;
+  severity: "Critical" | "High" | "Medium" | "Low" | "Passed";
+  whatIsIt: string;
+  whyImportant: string;
+  rootCause: string;
+  seoImpact: string;
+  userImpact: string;
+  recommendedFix: string;
+  htmlExample?: string;
+}
+
+function rootCauseFor(link: LinkEntry): string {
+  const label = link.status_label as string | undefined;
+  const code = link.status_code;
+  if (label?.includes("Timeout")) return "The destination server did not respond in time — likely slow, overloaded, or unreachable.";
+  if (label?.includes("SSL")) return "The destination has an invalid, expired, or misconfigured SSL certificate.";
+  if (label?.includes("Connection Error")) return "Could not connect to the destination — likely DNS failure or the domain/server is down.";
+  if (code === 404 || code === 410) return "The page was deleted, moved without a redirect, or the URL was typed/generated incorrectly.";
+  if (code && code >= 500) return "The destination server encountered an internal error while handling the request.";
+  if (code && code >= 300 && code < 400) return "The link points to a URL that has since moved to a different location.";
+  return "Unknown — the link could not be reached or classified.";
+}
+
+// Deterministic (rule-based) per-link explanation — mirrors the shape asked for by
+// a "why is this an issue / how to fix it" audit report, without an LLM call.
+export function explainLink(link: LinkEntry, kind: "internal" | "external"): LinkExplanation {
+  if (link.is_broken) {
+    const code = link.status_code;
+    return {
+      issueName: `Broken Link (${link.status_label || code || "error"})`,
+      status: "critical",
+      severity: "Critical",
+      whatIsIt: `This ${kind} link returns ${link.status_label || "an error"} instead of a working page.`,
+      whyImportant: "Broken links waste crawl budget, break the user journey, and signal poor site maintenance to both users and search engines.",
+      rootCause: rootCauseFor(link),
+      seoImpact:
+        kind === "internal"
+          ? "Wastes crawl budget, breaks internal link equity flow, and can orphan sections of your site from search engines."
+          : "Reduces trust and content-quality signals; visitors bouncing off a dead link increases exit rate on this page.",
+      userImpact: "Visitors who click this link land on an error page instead of the content they expected.",
+      recommendedFix:
+        "Update the href to the correct, working URL. If the destination content no longer exists, remove the link or replace it with the closest relevant page.",
+      htmlExample: `<a href="https://example.com/correct-page">${link.anchor_text || "Descriptive link text"}</a>`,
+    };
+  }
+  if (link.is_redirect) {
+    const chain = link.redirect_path || [];
+    return {
+      issueName: "Unnecessary Redirect",
+      status: "warning",
+      severity: "Medium",
+      whatIsIt: `This link points to a URL that redirects${chain.length > 1 ? ` through ${chain.length - 1} hop(s)` : ""} before reaching its final destination.`,
+      whyImportant: "Every redirect hop adds latency and dilutes a small amount of link equity passed to the final page.",
+      rootCause: rootCauseFor(link),
+      seoImpact: "Each hop in a redirect chain slightly dilutes link equity and slows crawling; long chains can even be dropped by crawlers.",
+      userImpact: "Visitors experience a small added delay while the browser follows the redirect.",
+      recommendedFix: "Update the href to point directly at the final destination URL shown below, skipping the redirect hop(s).",
+      htmlExample: chain.length
+        ? `<a href="${chain[chain.length - 1]}">${link.anchor_text || "Descriptive link text"}</a>`
+        : undefined,
+    };
+  }
+  if (link.opens_new_tab && (!link.has_noopener || !link.has_noreferrer)) {
+    return {
+      issueName: "Missing rel=\"noopener noreferrer\"",
+      status: "warning",
+      severity: "Medium",
+      whatIsIt: 'This link opens in a new tab (target="_blank") without rel="noopener noreferrer".',
+      whyImportant:
+        "Without noopener, the new tab keeps a JavaScript reference (window.opener) back to your page — a known security risk (reverse tabnabbing) and a minor performance cost.",
+      rootCause: "The target=\"_blank\" attribute was added without the accompanying rel attributes.",
+      seoImpact: "No direct ranking impact, but security best-practice audits (including some SEO tools) flag it.",
+      userImpact: "Invisible to most users, but exposes them to a low-probability phishing/tabnabbing vector on untrusted destinations.",
+      recommendedFix: 'Add rel="noopener noreferrer" to every link using target="_blank".',
+      htmlExample: `<a href="${link.url}" target="_blank" rel="noopener noreferrer">${link.anchor_text || "Link text"}</a>`,
+    };
+  }
+  if (link.is_weak_anchor) {
+    return {
+      issueName: "Weak / Generic Anchor Text",
+      status: "info",
+      severity: "Low",
+      whatIsIt: `The anchor text "${link.anchor_text}" is generic and doesn't describe the destination.`,
+      whyImportant: "Descriptive anchor text is a contextual relevance signal for search engines and helps users scanning the page.",
+      rootCause: "Generic phrasing (e.g. \"click here\", \"read more\") was used instead of descriptive text.",
+      seoImpact: "Missed opportunity for a small contextual relevance signal to the linked page's topic.",
+      userImpact: "Visitors scanning the page or using a screen reader can't tell where the link leads without additional context.",
+      recommendedFix: "Replace the anchor text with a short, descriptive phrase naming the destination content.",
+      htmlExample: `<a href="${link.url}">${kind === "internal" ? "Descriptive Page Title" : "Descriptive Source Name"}</a>`,
+    };
+  }
+  return {
+    issueName: "No Issues Detected",
+    status: "passed",
+    severity: "Passed",
+    whatIsIt: "This link resolved successfully and has no detected behavior or attribute issues.",
+    whyImportant: "Healthy links maintain crawlability and a good user experience.",
+    rootCause: "N/A",
+    seoImpact: "None — link is functioning as expected.",
+    userImpact: "None — link works as expected.",
+    recommendedFix: "No action needed.",
+  };
+}
+
+export interface DuplicateAnchorGroup {
+  anchor: string;
+  destinations: string[];
+}
+
+// "Duplicate anchor" in the sense professional audit tools flag: the SAME anchor
+// text used to link to DIFFERENT destinations — a real ambiguity issue, distinct
+// from just "this anchor text appears more than once" (which is normal, e.g. nav
+// links repeated across pages).
+export function duplicateAnchors(links: LinkEntry[]): DuplicateAnchorGroup[] {
+  const byAnchor = new Map<string, Set<string>>();
+  for (const l of links) {
+    const anchor = (l.anchor_text || "").trim();
+    if (!anchor || l.is_weak_anchor) continue;
+    const set = byAnchor.get(anchor) || new Set<string>();
+    set.add(l.url);
+    byAnchor.set(anchor, set);
+  }
+  return [...byAnchor.entries()]
+    .filter(([, dest]) => dest.size > 1)
+    .map(([anchor, dest]) => ({ anchor, destinations: [...dest] }))
+    .sort((a, b) => b.destinations.length - a.destinations.length);
 }
