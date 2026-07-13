@@ -16,10 +16,6 @@ venv/
 env/
 .env*
 
-# Streamlit (legacy)
-legacy-streamlit/.streamlit/secrets.toml
-legacy-streamlit/.streamlit/api_keys.json
-
 # Node / Next.js
 /node_modules
 /.pnp
@@ -53,9 +49,3 @@ audit_cache/
 backup/
 *.zip
 
-# Developer docs
-auditlog.md
-PREPUSH_CHECKLIST.md
-
-# Dev container
-.devcontainer/

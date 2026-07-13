@@ -36,9 +36,9 @@ export interface SpecialLinkEntry {
 
 export function flattenSpecialLinks(results: AuditResult[]): SpecialLinkEntry[] {
   return results.flatMap((r) => {
-    const special = (r as any).special_links || {};
-    return Object.values(special).flatMap((list: any) =>
-      (list || []).map((l: any) => ({ ...l, sourceUrl: r.url })),
+    const special = r.special_links || {};
+    return Object.values(special).flatMap((list) =>
+      (list || []).map((l) => ({ ...l, sourceUrl: r.url })),
     );
   });
 }
@@ -47,10 +47,11 @@ export function flattenLinks(
   results: AuditResult[],
   kind: "internal" | "external",
 ): LinkEntry[] {
-  const key = kind === "internal" ? "internal_links" : "external_links";
-  return results.flatMap((r) =>
-    ((r as any)[key]?.links || []).map((l: any) => ({ ...l, sourceUrl: r.url })),
-  );
+  return results.flatMap((r) => {
+    const data = kind === "internal" ? r.internal_links : r.external_links;
+    const links: LinkEntry[] = data?.links || [];
+    return links.map((l) => ({ ...l, sourceUrl: r.url }));
+  });
 }
 
 export function getBaseDomain(url: string): string {
@@ -127,7 +128,7 @@ export function orphanAndLowLinkPages(results: AuditResult[]) {
   const inbound = new Map<string, number>();
   for (const url of pageUrls) inbound.set(url, 0);
   for (const r of results) {
-    for (const l of (r as any).internal_links?.links || []) {
+    for (const l of r.internal_links?.links || []) {
       if (inbound.has(l.url)) inbound.set(l.url, (inbound.get(l.url) || 0) + 1);
     }
   }

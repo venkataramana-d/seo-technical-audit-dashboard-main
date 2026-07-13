@@ -3,21 +3,19 @@
 import { useState } from "react";
 import { useAudit } from "@/lib/state/AuditContext";
 import { Card, EmptyState, IssueRow, MetricCard, PageHeader } from "@/components/ui";
+import { downloadCsv } from "@/lib/format";
+import type { Issue } from "@/lib/types";
 
 const TABS = ["Hierarchy Tree", "Heading List", "H1 Across Site", "Issues"] as const;
 type Tab = (typeof TABS)[number];
 
-function downloadCsv(filename: string, rows: string[][]) {
-  const csv = rows
-    .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
-    .join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
+interface HeadingItem {
+  level: number;
+  text: string;
+  position: number;
+  is_empty: boolean;
+  length: number;
+  id_attr: string | null;
 }
 
 export default function HeadingsPage() {
@@ -36,9 +34,9 @@ export default function HeadingsPage() {
 
   const r = results[Math.min(selectedIdx, results.length - 1)];
   const hd = r.heading_detail || {};
-  const headings: any[] = hd.headings || [];
+  const headings: HeadingItem[] = hd.headings || [];
   const counts = hd.counts || {};
-  const issues = hd.issues || [];
+  const issues: Issue[] = hd.issues || [];
 
   function exportUrlCsv() {
     const rows = [["Level", "Text", "Length", "Empty"]];
@@ -179,7 +177,7 @@ export default function HeadingsPage() {
 
       {tab === "Issues" ? (
         <Card>
-          {issues.map((issue: any, i: number) => (
+          {issues.map((issue, i) => (
             <IssueRow key={i} issue={issue} />
           ))}
           {issues.length === 0 ? (

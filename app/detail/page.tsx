@@ -263,11 +263,9 @@ export default function DetailPage() {
             {(r.content?.intro_paragraphs_html?.length || r.content?.conclusion_paragraphs_html?.length) ? (
               <div className="flex flex-col gap-3 text-sm leading-relaxed text-[var(--seo-text)]">
                 {(r.content?.intro_paragraphs_html || []).map((html: string, i: number) => (
-                  // eslint-disable-next-line react/no-danger
                   <p key={`intro-${i}`} dangerouslySetInnerHTML={{ __html: html }} />
                 ))}
                 {(r.content?.conclusion_paragraphs_html || []).map((html: string, i: number) => (
-                  // eslint-disable-next-line react/no-danger
                   <p key={`concl-${i}`} dangerouslySetInnerHTML={{ __html: html }} />
                 ))}
               </div>

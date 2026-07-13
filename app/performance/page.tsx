@@ -6,6 +6,15 @@ import { Card, EmptyState, MetricCard, PageHeader } from "@/components/ui";
 
 const CWV_KEYS = ["ttfb", "fcp", "lcp", "cls", "tbt", "si", "inp"] as const;
 
+interface MobileCheck {
+  id: string;
+  name: string;
+  category: string;
+  status: string;
+  value: string;
+  detail: string;
+}
+
 function cwvColor(status: string) {
   if (status === "pass") return { text: "var(--cwv-good-text)", bg: "var(--cwv-good-bg)" };
   if (status === "warning") return { text: "var(--cwv-needs-text)", bg: "var(--cwv-needs-bg)" };
@@ -164,7 +173,7 @@ export default function PerformancePage() {
               Mobile Checks
             </h3>
             <div className="flex flex-col gap-2">
-              {(mobile.checks || []).map((c: any, i: number) => (
+              {(mobile.checks || []).map((c: MobileCheck, i: number) => (
                 <div
                   key={i}
                   className="flex items-center justify-between border-b border-[var(--seo-border)] py-1.5 text-sm last:border-0"

@@ -21,10 +21,16 @@ An enterprise-grade SEO auditing tool — inspired by SEMrush, Ahrefs, Ubersugge
 ### Link Auditing
 | Feature | Details |
 |---|---|
-| **Internal Links** | Total, unique, dofollow/nofollow, broken, redirect, weak anchor text |
-| **External Links** | Domain count, dofollow/nofollow, sponsored, UGC, missing noopener |
-| **Broken Link Detection** | HTTP status validation for every link |
-| **Security Attributes** | noopener, noreferrer on external links |
+| **Unified Link Table** | Internal + external links in one filterable, sortable, paginated view (type, follow, health, HTTP status, link category, DOM location) |
+| **Link Types** | Page, PDF, download, image — plus a separate view for mailto/tel/anchor(#)/JavaScript links |
+| **DOM Location** | Classifies each link as nav / header / footer / sidebar / breadcrumb / body content |
+| **Body Content Preview** | Renders a page's actual intro/conclusion paragraphs with links highlighted in place |
+| **Per-Link Issue Explanations** | What/why/root cause/SEO impact/user impact/recommended fix (with HTML example) for every broken, redirecting, weak-anchor, or security-gap link |
+| **Priority Scoring** | Deterministic 0–100 score per issue (severity + internal/external + homepage proximity) |
+| **Domain Categorization** | External domains grouped by type (social, news, academic, government, reference, tech) |
+| **Duplicate Anchor Detection** | Same anchor text pointing to different destinations |
+| **Security Attributes** | Missing noopener/noreferrer on any link opening a new tab |
+| **Bulk Actions** | Select rows to export, copy URLs, or open; one "Download This View" button exports whatever the current filters show |
 
 ### Advanced Technical Checks (Inspired by SEMrush / Ahrefs)
 | Feature | Details |
@@ -112,8 +118,7 @@ calls, which is expected for local UI-only work.
 │   ├── scoring.py           # SEO Health Score + thematic grouping
 │   └── report_generator.py  # CSV / Excel / PDF export
 ├── lib/                     # Client-side state, aggregation, formatting
-├── requirements.txt         # Python dependencies for /api
-└── legacy-streamlit/        # Original Streamlit app, kept for reference
+└── requirements.txt         # Python dependencies for /api
 ```
 
 ---
@@ -155,10 +160,10 @@ calls, which is expected for local UI-only work.
 ## Scope notes
 
 This version covers single-URL audits with full detail views, link analysis,
-performance/mobile/image checks, heading analysis, and CSV/Excel/PDF export.
-Bulk audits (CSV/sitemap upload) and the multi-provider API key vault from the
-original Streamlit app are not carried over — see `legacy-streamlit/app.py` if
-you need to reference that functionality.
+performance/mobile/image checks, heading analysis, and CSV/Excel/PDF/JSON
+export. Site-wide crawling and a multi-provider API-key vault are not
+implemented — both would need a database and background job queue, which is
+a real architecture change, not just more frontend work.
 
 ---
 
