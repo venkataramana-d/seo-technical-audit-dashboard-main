@@ -236,7 +236,46 @@ export default function DetailPage() {
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <Card>
             <h3 className="mb-3 text-sm font-semibold text-[var(--seo-subheading)]">Content</h3>
-            <KeyValueGrid data={r.content || {}} />
+            <KeyValueGrid
+              data={Object.fromEntries(
+                Object.entries(r.content || {}).filter(
+                  ([k]) => !["intro_paragraphs", "conclusion_paragraphs", "intro_paragraphs_html", "conclusion_paragraphs_html"].includes(k),
+                ),
+              )}
+            />
+          </Card>
+          <Card className="lg:col-span-2">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-[var(--seo-subheading)]">
+                Body Content Preview
+              </h3>
+              <div className="flex items-center gap-3 text-xs text-[var(--seo-text-light)]">
+                <span className="inline-flex items-center gap-1">
+                  <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: "#1D4ED8" }} />
+                  Internal link
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: "#7C3AED" }} />
+                  External link
+                </span>
+              </div>
+            </div>
+            {(r.content?.intro_paragraphs_html?.length || r.content?.conclusion_paragraphs_html?.length) ? (
+              <div className="flex flex-col gap-3 text-sm leading-relaxed text-[var(--seo-text)]">
+                {(r.content?.intro_paragraphs_html || []).map((html: string, i: number) => (
+                  // eslint-disable-next-line react/no-danger
+                  <p key={`intro-${i}`} dangerouslySetInnerHTML={{ __html: html }} />
+                ))}
+                {(r.content?.conclusion_paragraphs_html || []).map((html: string, i: number) => (
+                  // eslint-disable-next-line react/no-danger
+                  <p key={`concl-${i}`} dangerouslySetInnerHTML={{ __html: html }} />
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-[var(--seo-muted)]">
+                No intro/conclusion paragraph text captured for this page.
+              </p>
+            )}
           </Card>
           <Card>
             <h3 className="mb-3 text-sm font-semibold text-[var(--seo-subheading)]">

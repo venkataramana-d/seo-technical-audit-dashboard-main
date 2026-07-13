@@ -47,6 +47,7 @@ const PAGE_SIZE = 50;
 type HealthFilter = "all" | "ok" | "broken" | "redirect";
 type FollowFilter = "all" | "dofollow" | "nofollow";
 type CategoryFilter = "all" | "page" | "pdf" | "download" | "image";
+type LocationFilter = "all" | "nav" | "header" | "footer" | "sidebar" | "breadcrumb" | "body";
 type SortKey = "priority" | "response_time_ms" | "url" | "health";
 
 function downloadCsv(filename: string, rows: string[][]) {
@@ -65,7 +66,7 @@ function downloadCsv(filename: string, rows: string[][]) {
 export default function LinkAnalysisPage() {
   const { results } = useAudit();
   const [tab, setTab] = useState<Tab>("Overview");
-  const [linkFilter, setLinkFilter] = useState<{ health?: HealthFilter; follow?: FollowFilter }>({});
+  const [linkFilter, setLinkFilter] = useState<{ health?: HealthFilter; follow?: FollowFilter; location?: LocationFilter }>({});
 
   const internal = useMemo(() => flattenLinks(results, "internal"), [results]);
   const external = useMemo(() => flattenLinks(results, "external"), [results]);
@@ -93,7 +94,7 @@ export default function LinkAnalysisPage() {
   const brokenExternal = external.filter((l) => l.is_broken).length;
   const nofollowExternal = external.filter((l) => l.is_nofollow).length;
 
-  function goToTab(t: Tab, filter?: { health?: HealthFilter; follow?: FollowFilter }) {
+  function goToTab(t: Tab, filter?: { health?: HealthFilter; follow?: FollowFilter; location?: LocationFilter }) {
     setLinkFilter(filter || {});
     setTab(t);
   }
@@ -281,6 +282,19 @@ export default function LinkAnalysisPage() {
             <MetricCard label="Orphan Pages" value={orphan.length} onClick={() => goToTab("Opportunities")} />
             <MetricCard label="Special Links" value={specialLinks.length} onClick={() => goToTab("Special Links")} />
             <MetricCard label="Security Gaps" value={gaps.length} onClick={() => goToTab("Opportunities")} />
+            <MetricCard
+              label="Body Content Links"
+              value={allLinks.filter((l) => (l.location || "body") === "body").length}
+              onClick={() =>
+                goToTab(
+                  internal.filter((l) => (l.location || "body") === "body").length >=
+                    external.filter((l) => (l.location || "body") === "body").length
+                    ? "Internal Links"
+                    : "External Links",
+                  { location: "body" },
+                )
+              }
+            />
           </div>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -501,13 +515,14 @@ function LinkTable({
   links: LinkEntry[];
   kind: "internal" | "external";
   showSource: boolean;
-  initialFilter: { health?: HealthFilter; follow?: FollowFilter };
+  initialFilter: { health?: HealthFilter; follow?: FollowFilter; location?: LocationFilter };
   homepageUrl?: string;
 }) {
   const [search, setSearch] = useState("");
   const [followFilter, setFollowFilter] = useState<FollowFilter>(initialFilter.follow || "all");
   const [healthFilter, setHealthFilter] = useState<HealthFilter>(initialFilter.health || "all");
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
+  const [locationFilter, setLocationFilter] = useState<LocationFilter>(initialFilter.location || "all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [showDetails, setShowDetails] = useState(false);
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "priority", dir: -1 });
@@ -540,10 +555,11 @@ function LinkTable({
       if (healthFilter === "redirect" && !l.is_redirect) return false;
       if (healthFilter === "ok" && (l.is_broken || l.is_redirect)) return false;
       if (categoryFilter !== "all" && (l.link_category || "page") !== categoryFilter) return false;
+      if (locationFilter !== "all" && (l.location || "body") !== locationFilter) return false;
       if (statusFilter !== "all" && String(l.status_code) !== statusFilter) return false;
       return true;
     });
-  }, [withPriority, search, followFilter, healthFilter, categoryFilter, statusFilter]);
+  }, [withPriority, search, followFilter, healthFilter, categoryFilter, locationFilter, statusFilter]);
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
@@ -666,6 +682,22 @@ function LinkTable({
             <option value="pdf">PDF</option>
             <option value="download">Download</option>
             <option value="image">Image</option>
+          </select>
+          <select
+            value={locationFilter}
+            onChange={(e) => {
+              setLocationFilter(e.target.value as LocationFilter);
+              setPage(0);
+            }}
+            className="rounded-lg border border-[var(--seo-border-strong)] px-3 py-1.5 text-sm"
+          >
+            <option value="all">All locations</option>
+            <option value="body">Body content</option>
+            <option value="nav">Navigation</option>
+            <option value="header">Header</option>
+            <option value="footer">Footer</option>
+            <option value="sidebar">Sidebar</option>
+            <option value="breadcrumb">Breadcrumb</option>
           </select>
           {statusCodes.length > 0 ? (
             <select
