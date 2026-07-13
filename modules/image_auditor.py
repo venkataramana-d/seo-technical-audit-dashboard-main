@@ -200,6 +200,11 @@ def _extract_image_data(soup, base_url):
     images = []
 
     for tag in soup.find_all(["img", "source"]):
+        # A <source> tag is only image-related inside <picture> — inside
+        # <audio>/<video> it points to audio/video media, not an image.
+        if tag.name == "source" and tag.find_parent("picture") is None:
+            continue
+
         # Determine source URL
         src = tag.get("src") or tag.get("data-src") or tag.get("data-lazy-src") or ""
         if tag.name == "source":
