@@ -297,6 +297,8 @@ function rootCauseFor(link: LinkEntry): string {
   if (label?.includes("SSL")) return "The destination has an invalid, expired, or misconfigured SSL certificate.";
   if (label?.includes("Connection Error")) return "Could not connect to the destination — likely DNS failure or the domain/server is down.";
   if (code === 404 || code === 410) return "The page was deleted, moved without a redirect, or the URL was typed/generated incorrectly.";
+  if (code === 403 || code === 401) return "The destination is blocking access — often a site that rejects automated/bot requests, or a page requiring login.";
+  if (code === 429) return "The destination is rate-limiting requests — too many checks were made in a short window.";
   if (code && code >= 500) return "The destination server encountered an internal error while handling the request.";
   if (code && code >= 300 && code < 400) return "The link points to a URL that has since moved to a different location.";
   return "Unknown — the link could not be reached or classified.";
