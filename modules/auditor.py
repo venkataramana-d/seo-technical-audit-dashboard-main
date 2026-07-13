@@ -599,6 +599,8 @@ def audit_url(url, audit_type="auto", check_links=True, validate_links=False,
         link_res = audit_links(soup, url, validate=validate_links)
         result["internal_links"] = link_res["internal"]
         result["external_links"] = link_res["external"]
+        result["special_links"] = link_res.get("special", {})
+        result["special_link_counts"] = link_res.get("special_counts", {})
 
     if result["audit_type"] == "course":
         from modules.course_auditor import audit_course_page

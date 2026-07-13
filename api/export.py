@@ -11,6 +11,7 @@ MIME = {
     "csv": "text/csv",
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "pdf": "application/pdf",
+    "json": "application/json",
 }
 
 
@@ -33,7 +34,7 @@ class handler(BaseHTTPRequestHandler):
             results = payload.get("results") or []
             fmt = payload.get("format", "csv")
             if fmt not in MIME:
-                _send_json(self, 400, {"error": "format must be csv, xlsx, or pdf"})
+                _send_json(self, 400, {"error": "format must be csv, xlsx, pdf, or json"})
                 return
             if not results:
                 _send_json(self, 400, {"error": "results is required"})
@@ -43,6 +44,8 @@ class handler(BaseHTTPRequestHandler):
                 data = generate_csv(results)
             elif fmt == "xlsx":
                 data = generate_excel(results)
+            elif fmt == "json":
+                data = json.dumps(results, default=str, indent=2).encode("utf-8")
             else:
                 data = generate_pdf(results)
 

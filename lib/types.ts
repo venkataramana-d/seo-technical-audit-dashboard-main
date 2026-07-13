@@ -34,6 +34,8 @@ export interface AuditResult {
   redirect_analysis: Record<string, any>;
   internal_links: Record<string, any>;
   external_links: Record<string, any>;
+  special_links?: Record<string, any[]>;
+  special_link_counts?: Record<string, number>;
   course_audit?: Record<string, any> | null;
   blog_audit?: Record<string, any> | null;
   http_headers: Record<string, any>;

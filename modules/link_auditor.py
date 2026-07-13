@@ -165,6 +165,82 @@ def classify_link(href, base_url):
     return "external"
 
 
+# Extensions used to tag a page/internal/external link with a more specific
+# link_category than just "page" — purely extension-based, no content sniffing.
+_DOC_EXTENSIONS = {
+    "pdf": "pdf",
+    "doc": "download", "docx": "download",
+    "xls": "download", "xlsx": "download",
+    "ppt": "download", "pptx": "download",
+    "zip": "download", "rar": "download", "7z": "download",
+    "csv": "download", "txt": "download",
+    "mp3": "download", "mp4": "download", "mov": "download", "avi": "download",
+}
+_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "svg", "webp", "bmp", "avif"}
+
+
+def classify_link_category(url):
+    """Extension-based link category for internal/external links: pdf, download, image, or page."""
+    path = urlparse(url).path.lower()
+    ext = path.rsplit(".", 1)[-1] if "." in path.rsplit("/", 1)[-1] else ""
+    if ext == "pdf":
+        return "pdf"
+    if ext in _IMAGE_EXTENSIONS:
+        return "image"
+    if ext in _DOC_EXTENSIONS:
+        return "download"
+    return "page"
+
+
+_LOCATION_SELECTORS = (
+    ("nav", "nav"),
+    ("header", "header"),
+    ("footer", "footer"),
+    ("aside", "sidebar"),
+)
+
+
+def classify_link_location(tag):
+    """Walk up the DOM to classify where a link sits: nav / header / footer / sidebar /
+    breadcrumb / body. Heuristic — based on tag names and common class/id naming, not a
+    layout-rendering analysis."""
+    node = tag
+    depth = 0
+    while node is not None and depth < 12:
+        name = (getattr(node, "name", "") or "").lower()
+        classes = " ".join(node.get("class", [])).lower() if hasattr(node, "get") else ""
+        node_id = (node.get("id", "") or "").lower() if hasattr(node, "get") else ""
+        haystack = f"{classes} {node_id}"
+
+        if "breadcrumb" in haystack:
+            return "breadcrumb"
+        for tag_name, label in _LOCATION_SELECTORS:
+            if name == tag_name:
+                return label
+        if "sidebar" in haystack:
+            return "sidebar"
+        if "footer" in haystack:
+            return "footer"
+        if "nav" in haystack or "menu" in haystack:
+            return "nav"
+
+        node = node.parent
+        depth += 1
+    return "body"
+
+
+def parse_special_link_tag(tag, base_url, kind):
+    """Parse mailto: / tel: / #anchor / javascript: links — no HTTP validation applies."""
+    href = tag.get("href", "").strip()
+    anchor = tag.get_text(strip=True) or "[No Text]"
+    return {
+        "href": href,
+        "anchor_text": anchor[:150],
+        "kind": kind,
+        "location": classify_link_location(tag),
+    }
+
+
 def parse_link_tag(tag, base_url):
     href = tag.get("href", "").strip()
     if not href or href.startswith(("#", "mailto:", "tel:", "javascript:", "data:")):
@@ -206,6 +282,8 @@ def parse_link_tag(tag, base_url):
         "href":             href,
         "anchor_text":      anchor[:150],
         "anchor_type":      anchor_type,      # text / image / image-no-alt / empty
+        "link_category":    classify_link_category(full_url),  # page / pdf / download / image
+        "location":         classify_link_location(tag),        # nav / header / footer / sidebar / breadcrumb / body
         "title_attr":       title_attr,
         "rel":              " ".join(rel) if rel else "dofollow",
         "rel_list":         rel,
@@ -217,6 +295,7 @@ def parse_link_tag(tag, base_url):
         "opens_new_tab":    target == "_blank",
         "has_noopener":     "noopener"   in rel,
         "has_noreferrer":   "noreferrer" in rel,
+        "missing_target":   target == "",
         "is_weak_anchor":   anchor.lower().strip() in WEAK_ANCHORS,
         "status_code":      None,
         "status_label":     "Not Checked",
@@ -224,6 +303,9 @@ def parse_link_tag(tag, base_url):
         "is_broken":        None,
         "is_redirect":      None,
         "final_url":        None,
+        "redirect_path":    None,
+        "response_time_ms": None,
+        "content_type":     None,
     }
 
 
@@ -273,22 +355,28 @@ def validate_url(url):
 
         h     = link_health(code, url)
         label = status_label(code)
+        redirect_path = [r.url for r in resp.history] + [resp.url] if resp.history else []
+        response_time_ms = round(sum((r.elapsed.total_seconds() for r in resp.history), resp.elapsed.total_seconds()) * 1000)
 
         return {
-            "url":            url,
-            "status_code":    code,
-            "status_label":   label,
-            "health":         h,
-            "is_broken":      h == "broken",
-            "is_redirect":    h == "redirect",
-            "final_url":      resp.url,
-            "redirect_count": len(resp.history),
-            "ssl_error":      ssl_error,
+            "url":              url,
+            "status_code":      code,
+            "status_label":     label,
+            "health":           h,
+            "is_broken":        h == "broken",
+            "is_redirect":      h == "redirect",
+            "final_url":        resp.url,
+            "redirect_count":   len(resp.history),
+            "redirect_path":    redirect_path,
+            "response_time_ms": response_time_ms,
+            "content_type":     resp.headers.get("Content-Type", "").split(";")[0].strip(),
+            "ssl_error":        ssl_error,
         }
 
     except requests.exceptions.Timeout:
         return {"url": url, "status_code": 0, "status_label": "Timeout",
-                "health": "broken", "is_broken": True, "is_redirect": False}
+                "health": "broken", "is_broken": True, "is_redirect": False,
+                "response_time_ms": TIMEOUT * 1000}
     except requests.exceptions.SSLError:
         return {"url": url, "status_code": 0, "status_label": "SSL Error",
                 "health": "broken", "is_broken": True, "is_redirect": False}
@@ -314,10 +402,32 @@ def validate_urls_bulk(urls, max_workers=12):
     return results
 
 
+_SPECIAL_PREFIXES = (
+    ("mailto:", "mailto"),
+    ("tel:", "tel"),
+    ("javascript:", "javascript"),
+)
+
+
 def audit_links(soup, base_url, validate=False):
     internal, external = [], []
+    special = {"mailto": [], "tel": [], "anchor": [], "javascript": []}
 
     for tag in soup.find_all("a", href=True):
+        href = (tag.get("href") or "").strip()
+
+        matched_special = False
+        for prefix, kind in _SPECIAL_PREFIXES:
+            if href.startswith(prefix):
+                special[kind].append(parse_special_link_tag(tag, base_url, kind))
+                matched_special = True
+                break
+        if matched_special:
+            continue
+        if href.startswith("#") and len(href) > 1:
+            special["anchor"].append(parse_special_link_tag(tag, base_url, "anchor"))
+            continue
+
         link_data = parse_link_tag(tag, base_url)
         if not link_data:
             continue
@@ -332,16 +442,21 @@ def audit_links(soup, base_url, validate=False):
         validation = validate_urls_bulk(all_urls)
         for link in internal + external:
             v = validation.get(link["url"], {})
-            link["status_code"]  = v.get("status_code")
-            link["status_label"] = v.get("status_label", "Not Checked")
-            link["health"]       = v.get("health", "unknown")
-            link["is_broken"]    = v.get("is_broken")
-            link["is_redirect"]  = v.get("is_redirect")
-            link["final_url"]    = v.get("final_url")
+            link["status_code"]      = v.get("status_code")
+            link["status_label"]     = v.get("status_label", "Not Checked")
+            link["health"]           = v.get("health", "unknown")
+            link["is_broken"]        = v.get("is_broken")
+            link["is_redirect"]      = v.get("is_redirect")
+            link["final_url"]        = v.get("final_url")
+            link["redirect_path"]    = v.get("redirect_path")
+            link["response_time_ms"] = v.get("response_time_ms")
+            link["content_type"]     = v.get("content_type")
 
     return {
         "internal": _summarize_internal(internal),
         "external": _summarize_external(external),
+        "special": {k: v[:200] for k, v in special.items()},
+        "special_counts": {k: len(v) for k, v in special.items()},
     }
 
 

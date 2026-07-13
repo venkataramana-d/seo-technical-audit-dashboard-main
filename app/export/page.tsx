@@ -8,6 +8,7 @@ const FORMATS = [
   { id: "csv", label: "CSV", desc: "Flat summary — one row per URL." },
   { id: "xlsx", label: "Excel", desc: "Multi-sheet workbook: Summary, Issues, Links." },
   { id: "pdf", label: "PDF", desc: "Formatted report for sharing." },
+  { id: "json", label: "JSON", desc: "Full raw audit data for every URL." },
 ] as const;
 
 export default function ExportPage() {
@@ -62,7 +63,7 @@ export default function ExportPage() {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {FORMATS.map((f) => (
           <Card key={f.id}>
             <h3 className="text-sm font-semibold text-[var(--seo-subheading)]">{f.label}</h3>

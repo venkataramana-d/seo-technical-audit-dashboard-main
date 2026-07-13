@@ -5,16 +5,28 @@ import { useAudit } from "@/lib/state/AuditContext";
 import { Card, EmptyState, MetricCard, PageHeader } from "@/components/ui";
 import {
   anchorTextDistribution,
+  buildExecutiveSummary,
   externalDomainBreakdown,
   flattenLinks,
+  flattenSpecialLinks,
+  linkCertainty,
   linkHealthCounts,
   orphanAndLowLinkPages,
+  priorityScore,
   securityGaps,
   type LinkEntry,
+  type SpecialLinkEntry,
 } from "@/lib/linkAnalysis";
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 
-const TABS = ["Overview", "Internal Links", "External Links", "Anchor Text", "Opportunities"] as const;
+const TABS = [
+  "Overview",
+  "Internal Links",
+  "External Links",
+  "Special Links",
+  "Anchor Text",
+  "Opportunities",
+] as const;
 type Tab = (typeof TABS)[number];
 
 const HEALTH_COLORS: Record<string, string> = {
@@ -29,6 +41,21 @@ const PAGE_SIZE = 50;
 
 type HealthFilter = "all" | "ok" | "broken" | "redirect";
 type FollowFilter = "all" | "dofollow" | "nofollow";
+type CategoryFilter = "all" | "page" | "pdf" | "download" | "image";
+type SortKey = "priority" | "response_time_ms" | "url" | "health";
+
+function downloadCsv(filename: string, rows: string[][]) {
+  const csv = rows
+    .map((row) => row.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(","))
+    .join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 export default function LinkAnalysisPage() {
   const { results } = useAudit();
@@ -38,11 +65,14 @@ export default function LinkAnalysisPage() {
   const internal = useMemo(() => flattenLinks(results, "internal"), [results]);
   const external = useMemo(() => flattenLinks(results, "external"), [results]);
   const allLinks = useMemo(() => [...internal, ...external], [internal, external]);
+  const specialLinks = useMemo(() => flattenSpecialLinks(results), [results]);
   const anchorDist = useMemo(() => anchorTextDistribution(allLinks), [allLinks]);
   const { orphan, lowLink } = useMemo(() => orphanAndLowLinkPages(results), [results]);
   const domainStats = useMemo(() => externalDomainBreakdown(external), [external]);
   const health = useMemo(() => linkHealthCounts(allLinks), [allLinks]);
   const gaps = useMemo(() => securityGaps(external), [external]);
+  const summary = useMemo(() => buildExecutiveSummary(allLinks, orphan.length), [allLinks, orphan.length]);
+  const homepageUrl = results[0]?.url;
 
   if (results.length === 0) {
     return (
@@ -76,7 +106,10 @@ export default function LinkAnalysisPage() {
 
   return (
     <div>
-      <PageHeader title="🔗 Link Analysis" subtitle={`Across ${results.length} audited URL(s) · ${allLinks.length} total links`} />
+      <PageHeader
+        title="🔗 Link Analysis"
+        subtitle={`Across ${results.length} audited URL(s) · ${allLinks.length} links · ${specialLinks.length} special links (mailto/tel/anchor/js)`}
+      />
 
       <div className="mb-4 flex flex-wrap gap-1 border-b border-[var(--seo-border)]">
         {TABS.map((t) => (
@@ -96,6 +129,56 @@ export default function LinkAnalysisPage() {
 
       {tab === "Overview" ? (
         <div className="flex flex-col gap-4">
+          <Card>
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-[var(--seo-subheading)]">
+                Executive Summary
+              </h3>
+              <span className="text-xs text-[var(--seo-muted)]" title="Computed deterministically from the audit data below — not an LLM-generated write-up.">
+                Rule-based summary
+              </span>
+            </div>
+            <div className="mb-3 flex items-center gap-3">
+              <span
+                className="text-3xl font-bold"
+                style={{ color: summary.linkHealthScore >= 90 ? "var(--seo-success)" : summary.linkHealthScore >= 70 ? "var(--seo-accent)" : summary.linkHealthScore >= 50 ? "var(--seo-warning)" : "var(--seo-error)" }}
+              >
+                {summary.linkHealthScore}
+              </span>
+              <span className="text-sm text-[var(--seo-text-light)]">Link Health Score</span>
+            </div>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--seo-muted)]">
+                  Top Priority Fixes
+                </h4>
+                {summary.topPriorityFixes.length ? (
+                  <ul className="list-inside list-disc text-sm text-[var(--seo-text)]">
+                    {summary.topPriorityFixes.map((f, i) => (
+                      <li key={i}>{f}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-sm text-[var(--seo-muted)]">No broken or redirecting links found.</p>
+                )}
+              </div>
+              <div>
+                <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--seo-muted)]">
+                  Quick Wins
+                </h4>
+                {summary.quickWins.length ? (
+                  <ul className="list-inside list-disc text-sm text-[var(--seo-text)]">
+                    {summary.quickWins.map((f, i) => (
+                      <li key={i}>{f}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-sm text-[var(--seo-muted)]">Nothing quick to fix — nice work.</p>
+                )}
+              </div>
+            </div>
+          </Card>
+
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
             <MetricCard label="Internal Links" value={internal.length} onClick={() => goToTab("Internal Links")} />
             <MetricCard label="External Links" value={external.length} onClick={() => goToTab("External Links")} />
@@ -115,6 +198,8 @@ export default function LinkAnalysisPage() {
               onClick={() => goToTab("External Links", { follow: "nofollow" })}
             />
             <MetricCard label="Orphan Pages" value={orphan.length} onClick={() => goToTab("Opportunities")} />
+            <MetricCard label="Special Links" value={specialLinks.length} onClick={() => goToTab("Special Links")} />
+            <MetricCard label="Security Gaps" value={gaps.length} onClick={() => goToTab("Opportunities")} />
           </div>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -212,10 +297,14 @@ export default function LinkAnalysisPage() {
       {tab === "Internal Links" || tab === "External Links" ? (
         <LinkTable
           links={tab === "Internal Links" ? internal : external}
+          kind={tab === "Internal Links" ? "internal" : "external"}
           showSource={results.length > 1}
           initialFilter={linkFilter}
+          homepageUrl={homepageUrl}
         />
       ) : null}
+
+      {tab === "Special Links" ? <SpecialLinksTable links={specialLinks} showSource={results.length > 1} /> : null}
 
       {tab === "Anchor Text" ? (
         <Card className="overflow-x-auto p-0">
@@ -303,34 +392,117 @@ export default function LinkAnalysisPage() {
 
 function LinkTable({
   links,
+  kind,
   showSource,
   initialFilter,
+  homepageUrl,
 }: {
   links: LinkEntry[];
+  kind: "internal" | "external";
   showSource: boolean;
   initialFilter: { health?: HealthFilter; follow?: FollowFilter };
+  homepageUrl?: string;
 }) {
   const [search, setSearch] = useState("");
   const [followFilter, setFollowFilter] = useState<FollowFilter>(initialFilter.follow || "all");
   const [healthFilter, setHealthFilter] = useState<HealthFilter>(initialFilter.health || "all");
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
+  const [showDetails, setShowDetails] = useState(false);
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "priority", dir: -1 });
   const [page, setPage] = useState(0);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+
+  const withPriority = useMemo(
+    () =>
+      links.map((l) => ({
+        ...l,
+        __priority: priorityScore(l, kind, homepageUrl ? l.sourceUrl === homepageUrl : false),
+      })),
+    [links, kind, homepageUrl],
+  );
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return links.filter((l) => {
+    return withPriority.filter((l) => {
       if (q && !l.url.toLowerCase().includes(q) && !(l.anchor_text || "").toLowerCase().includes(q)) return false;
       if (followFilter === "dofollow" && !l.is_dofollow) return false;
       if (followFilter === "nofollow" && !l.is_nofollow) return false;
       if (healthFilter === "broken" && !l.is_broken) return false;
       if (healthFilter === "redirect" && !l.is_redirect) return false;
       if (healthFilter === "ok" && (l.is_broken || l.is_redirect)) return false;
+      if (categoryFilter !== "all" && (l.link_category || "page") !== categoryFilter) return false;
       return true;
     });
-  }, [links, search, followFilter, healthFilter]);
+  }, [withPriority, search, followFilter, healthFilter, categoryFilter]);
 
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const sorted = useMemo(() => {
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      let av: number | string = 0;
+      let bv: number | string = 0;
+      if (sort.key === "priority") {
+        av = a.__priority;
+        bv = b.__priority;
+      } else if (sort.key === "response_time_ms") {
+        av = a.response_time_ms ?? -1;
+        bv = b.response_time_ms ?? -1;
+      } else if (sort.key === "url") {
+        av = a.url;
+        bv = b.url;
+      } else if (sort.key === "health") {
+        av = a.health || "";
+        bv = b.health || "";
+      }
+      if (av < bv) return -sort.dir;
+      if (av > bv) return sort.dir;
+      return 0;
+    });
+    return arr;
+  }, [filtered, sort]);
+
+  const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const pageSafe = Math.min(page, pageCount - 1);
-  const pageLinks = filtered.slice(pageSafe * PAGE_SIZE, pageSafe * PAGE_SIZE + PAGE_SIZE);
+  const pageLinks = sorted.slice(pageSafe * PAGE_SIZE, pageSafe * PAGE_SIZE + PAGE_SIZE);
+
+  function toggleSort(key: SortKey) {
+    setSort((s) => (s.key === key ? { key, dir: s.dir === 1 ? -1 : 1 } : { key, dir: -1 }));
+  }
+
+  function toggleSelectAll() {
+    if (selected.size === pageLinks.length && pageLinks.length > 0) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(pageLinks.map((_, i) => i)));
+    }
+  }
+
+  function toggleSelect(i: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+  }
+
+  const selectedLinks = pageLinks.filter((_, i) => selected.has(i));
+
+  function exportSelected() {
+    const rows: string[][] = [["URL", "Anchor Text", "Follow", "Health", "Priority", "Source Page"]];
+    for (const l of selectedLinks) {
+      rows.push([l.url, l.anchor_text, l.is_dofollow ? "Dofollow" : "Nofollow", l.health || "unknown", String(l.__priority), l.sourceUrl]);
+    }
+    downloadCsv(`${kind}-links-selected.csv`, rows);
+  }
+
+  function copySelectedUrls() {
+    const text = selectedLinks.map((l) => l.url).join("\n");
+    navigator.clipboard?.writeText(text);
+  }
+
+  function openSelected() {
+    selectedLinks.slice(0, 10).forEach((l) => window.open(l.url, "_blank", "noopener,noreferrer"));
+  }
 
   return (
     <div className="flex flex-col gap-3">
@@ -371,19 +543,76 @@ function LinkTable({
             <option value="broken">Broken only</option>
             <option value="redirect">Redirects only</option>
           </select>
-          <span className="text-xs text-[var(--seo-muted)]">{filtered.length} link(s)</span>
+          <select
+            value={categoryFilter}
+            onChange={(e) => {
+              setCategoryFilter(e.target.value as CategoryFilter);
+              setPage(0);
+            }}
+            className="rounded-lg border border-[var(--seo-border-strong)] px-3 py-1.5 text-sm"
+          >
+            <option value="all">All link types</option>
+            <option value="page">Page</option>
+            <option value="pdf">PDF</option>
+            <option value="download">Download</option>
+            <option value="image">Image</option>
+          </select>
+          <label className="flex items-center gap-1.5 text-xs text-[var(--seo-text-light)]">
+            <input type="checkbox" checked={showDetails} onChange={(e) => setShowDetails(e.target.checked)} />
+            Show technical details
+          </label>
+          <span className="text-xs text-[var(--seo-muted)]">{sorted.length} link(s)</span>
         </div>
       </Card>
+
+      {selected.size > 0 ? (
+        <Card className="flex flex-wrap items-center gap-2 py-2">
+          <span className="text-xs font-medium text-[var(--seo-text-light)]">{selected.size} selected</span>
+          <button onClick={exportSelected} className="rounded border border-[var(--seo-border-strong)] px-2 py-1 text-xs hover:bg-[var(--seo-card-hover)]">
+            Export Selected
+          </button>
+          <button onClick={copySelectedUrls} className="rounded border border-[var(--seo-border-strong)] px-2 py-1 text-xs hover:bg-[var(--seo-card-hover)]">
+            Copy URLs
+          </button>
+          <button onClick={openSelected} className="rounded border border-[var(--seo-border-strong)] px-2 py-1 text-xs hover:bg-[var(--seo-card-hover)]">
+            Open (max 10)
+          </button>
+        </Card>
+      ) : null}
 
       <Card className="overflow-x-auto p-0">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-[var(--seo-border)] bg-[var(--table-header-bg)] text-left text-xs uppercase tracking-wide text-[var(--seo-muted)]">
-              <th className="px-4 py-3">URL</th>
+              <th className="px-3 py-3">
+                <input
+                  type="checkbox"
+                  checked={selected.size > 0 && selected.size === pageLinks.length}
+                  onChange={toggleSelectAll}
+                />
+              </th>
+              <th className="cursor-pointer px-4 py-3" onClick={() => toggleSort("url")}>
+                URL {sort.key === "url" ? (sort.dir === 1 ? "▲" : "▼") : ""}
+              </th>
               {showSource ? <th className="px-4 py-3">Source Page</th> : null}
               <th className="px-4 py-3">Anchor Text</th>
               <th className="px-4 py-3">Follow</th>
-              <th className="px-4 py-3">Health</th>
+              <th className="cursor-pointer px-4 py-3" onClick={() => toggleSort("health")}>
+                Health {sort.key === "health" ? (sort.dir === 1 ? "▲" : "▼") : ""}
+              </th>
+              <th className="cursor-pointer px-4 py-3" onClick={() => toggleSort("priority")}>
+                Priority {sort.key === "priority" ? (sort.dir === 1 ? "▲" : "▼") : ""}
+              </th>
+              {showDetails ? (
+                <>
+                  <th className="px-4 py-3">Type</th>
+                  <th className="px-4 py-3">Location</th>
+                  <th className="cursor-pointer px-4 py-3" onClick={() => toggleSort("response_time_ms")}>
+                    Response {sort.key === "response_time_ms" ? (sort.dir === 1 ? "▲" : "▼") : ""}
+                  </th>
+                  <th className="px-4 py-3">Certainty</th>
+                </>
+              ) : null}
               <th className="px-4 py-3">Flags</th>
             </tr>
           </thead>
@@ -392,6 +621,9 @@ function LinkTable({
               const secGap = l.opens_new_tab && (!l.has_noopener || !l.has_noreferrer);
               return (
                 <tr key={i} className="border-b border-[var(--table-row-border)]">
+                  <td className="px-3 py-3">
+                    <input type="checkbox" checked={selected.has(i)} onChange={() => toggleSelect(i)} />
+                  </td>
                   <td className="max-w-xs truncate px-4 py-3 text-[var(--seo-subheading)]">{l.url}</td>
                   {showSource ? (
                     <td className="max-w-[10rem] truncate px-4 py-3 text-xs text-[var(--seo-text-light)]">
@@ -406,6 +638,29 @@ function LinkTable({
                     </span>
                   </td>
                   <td className="px-4 py-3">
+                    {l.__priority > 0 ? (
+                      <span
+                        className="rounded-full px-2 py-0.5 text-xs font-semibold"
+                        style={{
+                          color: l.__priority >= 70 ? "var(--seo-error)" : "var(--seo-warning)",
+                          backgroundColor: l.__priority >= 70 ? "var(--seo-error-bg)" : "var(--seo-warning-bg)",
+                        }}
+                      >
+                        {l.__priority}
+                      </span>
+                    ) : (
+                      <span className="text-[var(--seo-muted)]">—</span>
+                    )}
+                  </td>
+                  {showDetails ? (
+                    <>
+                      <td className="px-4 py-3 capitalize">{l.link_category || "page"}</td>
+                      <td className="px-4 py-3 capitalize">{l.location || "body"}</td>
+                      <td className="px-4 py-3">{l.response_time_ms != null ? `${l.response_time_ms} ms` : "—"}</td>
+                      <td className="px-4 py-3 text-xs">{linkCertainty(l)}</td>
+                    </>
+                  ) : null}
+                  <td className="px-4 py-3">
                     <div className="flex gap-1">
                       {l.is_weak_anchor ? (
                         <span className="rounded-full bg-[var(--seo-warning-bg)] px-2 py-0.5 text-xs font-medium text-[var(--seo-warning)]">
@@ -417,6 +672,11 @@ function LinkTable({
                           No noopener
                         </span>
                       ) : null}
+                      {l.missing_target ? (
+                        <span className="rounded-full bg-[var(--seo-card-hover)] px-2 py-0.5 text-xs font-medium text-[var(--seo-muted)]">
+                          No target
+                        </span>
+                      ) : null}
                     </div>
                   </td>
                 </tr>
@@ -424,7 +684,7 @@ function LinkTable({
             })}
             {pageLinks.length === 0 ? (
               <tr>
-                <td colSpan={showSource ? 6 : 5} className="px-4 py-6 text-center text-[var(--seo-muted)]">
+                <td colSpan={showSource ? (showDetails ? 12 : 8) : showDetails ? 11 : 7} className="px-4 py-6 text-center text-[var(--seo-muted)]">
                   No links match this filter.
                 </td>
               </tr>
@@ -456,6 +716,78 @@ function LinkTable({
             </div>
           </div>
         ) : null}
+      </Card>
+    </div>
+  );
+}
+
+function SpecialLinksTable({ links, showSource }: { links: SpecialLinkEntry[]; showSource: boolean }) {
+  const [kindFilter, setKindFilter] = useState<"all" | SpecialLinkEntry["kind"]>("all");
+
+  const filtered = useMemo(
+    () => links.filter((l) => kindFilter === "all" || l.kind === kindFilter),
+    [links, kindFilter],
+  );
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { mailto: 0, tel: 0, anchor: 0, javascript: 0 };
+    for (const l of links) c[l.kind] = (c[l.kind] || 0) + 1;
+    return c;
+  }, [links]);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <MetricCard label="Mailto Links" value={counts.mailto} onClick={() => setKindFilter("mailto")} />
+        <MetricCard label="Tel Links" value={counts.tel} onClick={() => setKindFilter("tel")} />
+        <MetricCard label="Anchor Links" value={counts.anchor} onClick={() => setKindFilter("anchor")} />
+        <MetricCard label="JS Links" value={counts.javascript} onClick={() => setKindFilter("javascript")} />
+      </div>
+      <Card>
+        <select
+          value={kindFilter}
+          onChange={(e) => setKindFilter(e.target.value as typeof kindFilter)}
+          className="rounded-lg border border-[var(--seo-border-strong)] px-3 py-1.5 text-sm"
+        >
+          <option value="all">All kinds</option>
+          <option value="mailto">Mailto</option>
+          <option value="tel">Tel</option>
+          <option value="anchor">Anchor (#)</option>
+          <option value="javascript">JavaScript</option>
+        </select>
+      </Card>
+      <Card className="overflow-x-auto p-0">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-[var(--seo-border)] bg-[var(--table-header-bg)] text-left text-xs uppercase tracking-wide text-[var(--seo-muted)]">
+              <th className="px-4 py-3">Href</th>
+              <th className="px-4 py-3">Anchor Text</th>
+              <th className="px-4 py-3">Kind</th>
+              <th className="px-4 py-3">Location</th>
+              {showSource ? <th className="px-4 py-3">Source Page</th> : null}
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.slice(0, 300).map((l, i) => (
+              <tr key={i} className="border-b border-[var(--table-row-border)]">
+                <td className="max-w-xs truncate px-4 py-3 text-[var(--seo-subheading)]">{l.href}</td>
+                <td className="max-w-xs truncate px-4 py-3 text-[var(--seo-text-light)]">{l.anchor_text}</td>
+                <td className="px-4 py-3 capitalize">{l.kind}</td>
+                <td className="px-4 py-3 capitalize">{l.location}</td>
+                {showSource ? (
+                  <td className="max-w-[10rem] truncate px-4 py-3 text-xs text-[var(--seo-text-light)]">{l.sourceUrl}</td>
+                ) : null}
+              </tr>
+            ))}
+            {filtered.length === 0 ? (
+              <tr>
+                <td colSpan={showSource ? 5 : 4} className="px-4 py-6 text-center text-[var(--seo-muted)]">
+                  No special links found.
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
       </Card>
     </div>
   );

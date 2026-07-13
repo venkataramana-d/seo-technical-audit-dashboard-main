@@ -4,6 +4,8 @@ export interface LinkEntry {
   url: string;
   anchor_text: string;
   anchor_type: string;
+  link_category?: "page" | "pdf" | "download" | "image" | string;
+  location?: "nav" | "header" | "footer" | "sidebar" | "breadcrumb" | "body" | string;
   is_dofollow: boolean;
   is_nofollow: boolean;
   is_sponsored?: boolean;
@@ -14,9 +16,30 @@ export interface LinkEntry {
   opens_new_tab: boolean;
   has_noopener: boolean;
   has_noreferrer?: boolean;
+  missing_target?: boolean;
   is_weak_anchor?: boolean;
   status_code?: number | null;
+  redirect_path?: string[] | null;
+  response_time_ms?: number | null;
+  content_type?: string | null;
   sourceUrl: string;
+}
+
+export interface SpecialLinkEntry {
+  href: string;
+  anchor_text: string;
+  kind: "mailto" | "tel" | "anchor" | "javascript";
+  location: string;
+  sourceUrl: string;
+}
+
+export function flattenSpecialLinks(results: AuditResult[]): SpecialLinkEntry[] {
+  return results.flatMap((r) => {
+    const special = (r as any).special_links || {};
+    return Object.values(special).flatMap((list: any) =>
+      (list || []).map((l: any) => ({ ...l, sourceUrl: r.url })),
+    );
+  });
 }
 
 export function flattenLinks(
@@ -160,4 +183,74 @@ export function linkHealthCounts(links: LinkEntry[]) {
 
 export function securityGaps(links: LinkEntry[]): LinkEntry[] {
   return links.filter((l) => l.opens_new_tab && (!l.has_noopener || !l.has_noreferrer));
+}
+
+// Was this specific link actually HTTP-checked (validateLinks was on), or is its
+// health/status just the unchecked default? Surfaced in the UI as a certainty label
+// rather than a numeric "confidence score" — a 404 is a 404, not a probability.
+export function linkCertainty(link: LinkEntry): "Verified" | "Not Checked" {
+  return link.status_code !== null && link.status_code !== undefined ? "Verified" : "Not Checked";
+}
+
+// Deterministic priority scoring (NOT a machine-learned score) — combines issue
+// severity with reach (internal links affect crawl budget/link equity on your own
+// site; homepage-adjacent links are seen by more crawl paths).
+export function priorityScore(link: LinkEntry, kind: "internal" | "external", isHomepage: boolean): number {
+  let score = 0;
+  if (link.is_broken) score = 70;
+  else if (link.is_redirect) score = 40;
+  else return 0;
+  if (kind === "internal") score += 20;
+  if (isHomepage) score += 10;
+  return Math.min(100, score);
+}
+
+export interface ExecutiveSummary {
+  linkHealthScore: number;
+  totalLinks: number;
+  criticalCount: number;
+  brokenCount: number;
+  redirectCount: number;
+  securityGapCount: number;
+  weakAnchorCount: number;
+  orphanCount: number;
+  quickWins: string[];
+  topPriorityFixes: string[];
+}
+
+// Rule-based summary computed from already-gathered stats — not LLM-generated prose.
+// Labeled as such in the UI; wiring a real LLM for natural-language write-ups would
+// need an API key (see project notes).
+export function buildExecutiveSummary(
+  allLinks: LinkEntry[],
+  orphanCount: number,
+): ExecutiveSummary {
+  const health = linkHealthCounts(allLinks);
+  const gaps = securityGaps(allLinks);
+  const weak = allLinks.filter((l) => l.is_weak_anchor);
+  const total = allLinks.length || 1;
+  const healthScore = Math.round(((health.ok + health.unknown * 0.5) / total) * 100);
+  const criticalCount = health.broken;
+
+  const quickWins: string[] = [];
+  if (weak.length > 0) quickWins.push(`Rewrite ${weak.length} weak anchor text link(s) (e.g. "click here") with descriptive text.`);
+  if (gaps.length > 0) quickWins.push(`Add rel="noopener noreferrer" to ${gaps.length} link(s) opening in a new tab.`);
+  if (orphanCount > 0) quickWins.push(`Add internal links to ${orphanCount} orphan page(s) with zero inbound links.`);
+
+  const topPriorityFixes: string[] = [];
+  if (health.broken > 0) topPriorityFixes.push(`Fix ${health.broken} broken link(s) — direct crawl and user-experience impact.`);
+  if (health.redirect > 0) topPriorityFixes.push(`Update ${health.redirect} redirecting link(s) to point straight to the final URL.`);
+
+  return {
+    linkHealthScore: Math.max(0, Math.min(100, healthScore)),
+    totalLinks: allLinks.length,
+    criticalCount,
+    brokenCount: health.broken,
+    redirectCount: health.redirect,
+    securityGapCount: gaps.length,
+    weakAnchorCount: weak.length,
+    orphanCount,
+    quickWins,
+    topPriorityFixes,
+  };
 }
