@@ -17,21 +17,12 @@ import {
   priorityScore,
   securityGaps,
   STATUS_COLOR_HEX,
-  STATUS_COLOR_LABEL,
   type LinkEntry,
   type SpecialLinkEntry,
-  type StatusColor,
 } from "@/lib/linkAnalysis";
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 
-const TABS = [
-  "Overview",
-  "Internal Links",
-  "External Links",
-  "Special Links",
-  "Anchor Text",
-  "Opportunities",
-] as const;
+const TABS = ["Overview", "Links", "Special Links", "Anchor Text", "Opportunities"] as const;
 type Tab = (typeof TABS)[number];
 
 const HEALTH_COLORS: Record<string, string> = {
@@ -48,7 +39,15 @@ type HealthFilter = "all" | "ok" | "broken" | "redirect";
 type FollowFilter = "all" | "dofollow" | "nofollow";
 type CategoryFilter = "all" | "page" | "pdf" | "download" | "image";
 type LocationFilter = "all" | "nav" | "header" | "footer" | "sidebar" | "breadcrumb" | "body";
+type TypeFilter = "all" | "internal" | "external";
 type SortKey = "priority" | "response_time_ms" | "url" | "health";
+
+interface LinkFilterPreset {
+  health?: HealthFilter;
+  follow?: FollowFilter;
+  location?: LocationFilter;
+  type?: TypeFilter;
+}
 
 function downloadCsv(filename: string, rows: string[][]) {
   const csv = rows
@@ -66,10 +65,16 @@ function downloadCsv(filename: string, rows: string[][]) {
 export default function LinkAnalysisPage() {
   const { results } = useAudit();
   const [tab, setTab] = useState<Tab>("Overview");
-  const [linkFilter, setLinkFilter] = useState<{ health?: HealthFilter; follow?: FollowFilter; location?: LocationFilter }>({});
+  const [linkFilter, setLinkFilter] = useState<LinkFilterPreset>({});
 
-  const internal = useMemo(() => flattenLinks(results, "internal"), [results]);
-  const external = useMemo(() => flattenLinks(results, "external"), [results]);
+  const internal = useMemo(
+    () => flattenLinks(results, "internal").map((l) => ({ ...l, __kind: "internal" as const })),
+    [results],
+  );
+  const external = useMemo(
+    () => flattenLinks(results, "external").map((l) => ({ ...l, __kind: "external" as const })),
+    [results],
+  );
   const allLinks = useMemo(() => [...internal, ...external], [internal, external]);
   const specialLinks = useMemo(() => flattenSpecialLinks(results), [results]);
   const anchorDist = useMemo(() => anchorTextDistribution(allLinks), [allLinks]);
@@ -77,7 +82,7 @@ export default function LinkAnalysisPage() {
   const { orphan, lowLink } = useMemo(() => orphanAndLowLinkPages(results), [results]);
   const domainStats = useMemo(() => externalDomainBreakdown(external), [external]);
   const health = useMemo(() => linkHealthCounts(allLinks), [allLinks]);
-  const gaps = useMemo(() => securityGaps(external), [external]);
+  const gaps = useMemo(() => securityGaps(allLinks), [allLinks]);
   const summary = useMemo(() => buildExecutiveSummary(allLinks, orphan.length), [allLinks, orphan.length]);
   const homepageUrl = results[0]?.url;
 
@@ -94,29 +99,9 @@ export default function LinkAnalysisPage() {
   const brokenExternal = external.filter((l) => l.is_broken).length;
   const nofollowExternal = external.filter((l) => l.is_nofollow).length;
 
-  function goToTab(t: Tab, filter?: { health?: HealthFilter; follow?: FollowFilter; location?: LocationFilter }) {
+  function goToTab(t: Tab, filter?: LinkFilterPreset) {
     setLinkFilter(filter || {});
     setTab(t);
-  }
-
-  function downloadLinkReport(name: string, subset: LinkEntry[]) {
-    const rows: string[][] = [
-      ["URL", "Source Page", "Anchor Text", "Type", "Location", "Follow", "Health", "Status Code", "Response Time (ms)"],
-    ];
-    for (const l of subset) {
-      rows.push([
-        l.url,
-        l.sourceUrl,
-        l.anchor_text,
-        l.link_category || "page",
-        l.location || "body",
-        l.is_dofollow ? "Dofollow" : "Nofollow",
-        l.health || "unknown",
-        String(l.status_code ?? ""),
-        String(l.response_time_ms ?? ""),
-      ]);
-    }
-    downloadCsv(`${name}.csv`, rows);
   }
 
   const healthData = [
@@ -206,78 +191,23 @@ export default function LinkAnalysisPage() {
             </div>
           </Card>
 
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <Card>
-              <h3 className="mb-2 text-sm font-semibold text-[var(--seo-subheading)]">Quick Reports</h3>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={() => downloadLinkReport("broken-link-report", allLinks.filter((l) => l.is_broken))}
-                  className="rounded-lg border border-[var(--seo-border-strong)] px-3 py-1.5 text-xs font-medium hover:bg-[var(--seo-card-hover)]"
-                >
-                  Broken Link Report ({health.broken})
-                </button>
-                <button
-                  onClick={() => downloadLinkReport("redirect-report", allLinks.filter((l) => l.is_redirect))}
-                  className="rounded-lg border border-[var(--seo-border-strong)] px-3 py-1.5 text-xs font-medium hover:bg-[var(--seo-card-hover)]"
-                >
-                  Redirect Report ({health.redirect})
-                </button>
-                <button
-                  onClick={() => downloadLinkReport("internal-link-report", internal)}
-                  className="rounded-lg border border-[var(--seo-border-strong)] px-3 py-1.5 text-xs font-medium hover:bg-[var(--seo-card-hover)]"
-                >
-                  Internal Link Report ({internal.length})
-                </button>
-                <button
-                  onClick={() => downloadLinkReport("external-link-report", external)}
-                  className="rounded-lg border border-[var(--seo-border-strong)] px-3 py-1.5 text-xs font-medium hover:bg-[var(--seo-card-hover)]"
-                >
-                  External Link Report ({external.length})
-                </button>
-                <button
-                  onClick={() => downloadLinkReport("link-behavior-report", gaps)}
-                  className="rounded-lg border border-[var(--seo-border-strong)] px-3 py-1.5 text-xs font-medium hover:bg-[var(--seo-card-hover)]"
-                >
-                  Link Behavior Report ({gaps.length})
-                </button>
-                <button
-                  onClick={() => downloadLinkReport("complete-link-analysis-report", allLinks)}
-                  className="rounded-lg bg-[var(--seo-accent)] px-3 py-1.5 text-xs font-semibold text-white"
-                >
-                  Complete Report ({allLinks.length})
-                </button>
-              </div>
-            </Card>
-            <Card>
-              <h3 className="mb-2 text-sm font-semibold text-[var(--seo-subheading)]">Status Legend</h3>
-              <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs text-[var(--seo-text)]">
-                {(Object.keys(STATUS_COLOR_LABEL) as StatusColor[]).map((k) => (
-                  <span key={k}>{STATUS_COLOR_LABEL[k]}</span>
-                ))}
-              </div>
-              <p className="mt-2 text-xs text-[var(--seo-muted)]">
-                Consistent across KPI cards, tables, and exports throughout Link Analysis.
-              </p>
-            </Card>
-          </div>
-
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-            <MetricCard label="Internal Links" value={internal.length} onClick={() => goToTab("Internal Links")} />
-            <MetricCard label="External Links" value={external.length} onClick={() => goToTab("External Links")} />
+            <MetricCard label="Internal Links" value={internal.length} onClick={() => goToTab("Links", { type: "internal" })} />
+            <MetricCard label="External Links" value={external.length} onClick={() => goToTab("Links", { type: "external" })} />
             <MetricCard
               label="Broken Internal"
               value={brokenInternal}
-              onClick={() => goToTab("Internal Links", { health: "broken" })}
+              onClick={() => goToTab("Links", { type: "internal", health: "broken" })}
             />
             <MetricCard
               label="Broken External"
               value={brokenExternal}
-              onClick={() => goToTab("External Links", { health: "broken" })}
+              onClick={() => goToTab("Links", { type: "external", health: "broken" })}
             />
             <MetricCard
               label="Nofollow External"
               value={nofollowExternal}
-              onClick={() => goToTab("External Links", { follow: "nofollow" })}
+              onClick={() => goToTab("Links", { type: "external", follow: "nofollow" })}
             />
             <MetricCard label="Orphan Pages" value={orphan.length} onClick={() => goToTab("Opportunities")} />
             <MetricCard label="Special Links" value={specialLinks.length} onClick={() => goToTab("Special Links")} />
@@ -285,15 +215,7 @@ export default function LinkAnalysisPage() {
             <MetricCard
               label="Body Content Links"
               value={allLinks.filter((l) => (l.location || "body") === "body").length}
-              onClick={() =>
-                goToTab(
-                  internal.filter((l) => (l.location || "body") === "body").length >=
-                    external.filter((l) => (l.location || "body") === "body").length
-                    ? "Internal Links"
-                    : "External Links",
-                  { location: "body" },
-                )
-              }
+              onClick={() => goToTab("Links", { location: "body" })}
             />
           </div>
 
@@ -389,10 +311,9 @@ export default function LinkAnalysisPage() {
         </div>
       ) : null}
 
-      {tab === "Internal Links" || tab === "External Links" ? (
+      {tab === "Links" ? (
         <LinkTable
-          links={tab === "Internal Links" ? internal : external}
-          kind={tab === "Internal Links" ? "internal" : "external"}
+          links={allLinks}
           showSource={results.length > 1}
           initialFilter={linkFilter}
           homepageUrl={homepageUrl}
@@ -487,7 +408,7 @@ export default function LinkAnalysisPage() {
               Missing Security Attributes ({gaps.length})
             </h3>
             <p className="mb-2 text-xs text-[var(--seo-text-light)]">
-              External links opening in a new tab without <code>rel=&quot;noopener noreferrer&quot;</code> —
+              Links opening in a new tab without <code>rel=&quot;noopener noreferrer&quot;</code> —
               a tabnabbing / performance risk.
             </p>
             <ul className="text-sm text-[var(--seo-text)]">
@@ -507,18 +428,17 @@ export default function LinkAnalysisPage() {
 
 function LinkTable({
   links,
-  kind,
   showSource,
   initialFilter,
   homepageUrl,
 }: {
-  links: LinkEntry[];
-  kind: "internal" | "external";
+  links: (LinkEntry & { __kind: "internal" | "external" })[];
   showSource: boolean;
-  initialFilter: { health?: HealthFilter; follow?: FollowFilter; location?: LocationFilter };
+  initialFilter: LinkFilterPreset;
   homepageUrl?: string;
 }) {
   const [search, setSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>(initialFilter.type || "all");
   const [followFilter, setFollowFilter] = useState<FollowFilter>(initialFilter.follow || "all");
   const [healthFilter, setHealthFilter] = useState<HealthFilter>(initialFilter.health || "all");
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
@@ -540,15 +460,16 @@ function LinkTable({
     () =>
       links.map((l) => ({
         ...l,
-        __priority: priorityScore(l, kind, homepageUrl ? l.sourceUrl === homepageUrl : false),
+        __priority: priorityScore(l, l.__kind, homepageUrl ? l.sourceUrl === homepageUrl : false),
       })),
-    [links, kind, homepageUrl],
+    [links, homepageUrl],
   );
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return withPriority.filter((l) => {
       if (q && !l.url.toLowerCase().includes(q) && !(l.anchor_text || "").toLowerCase().includes(q)) return false;
+      if (typeFilter !== "all" && l.__kind !== typeFilter) return false;
       if (followFilter === "dofollow" && !l.is_dofollow) return false;
       if (followFilter === "nofollow" && !l.is_nofollow) return false;
       if (healthFilter === "broken" && !l.is_broken) return false;
@@ -559,7 +480,7 @@ function LinkTable({
       if (statusFilter !== "all" && String(l.status_code) !== statusFilter) return false;
       return true;
     });
-  }, [withPriority, search, followFilter, healthFilter, categoryFilter, locationFilter, statusFilter]);
+  }, [withPriority, search, typeFilter, followFilter, healthFilter, categoryFilter, locationFilter, statusFilter]);
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
@@ -613,12 +534,32 @@ function LinkTable({
 
   const selectedLinks = pageLinks.filter((_, i) => selected.has(i));
 
-  function exportSelected() {
-    const rows: string[][] = [["URL", "Anchor Text", "Follow", "Health", "Priority", "Source Page"]];
-    for (const l of selectedLinks) {
-      rows.push([l.url, l.anchor_text, l.is_dofollow ? "Dofollow" : "Nofollow", l.health || "unknown", String(l.__priority), l.sourceUrl]);
+  function linksToCsvRows(subset: typeof sorted) {
+    const rows: string[][] = [
+      ["URL", "Source Page", "Anchor Text", "Type", "Follow", "Health", "Priority", "Status Code", "Response Time (ms)"],
+    ];
+    for (const l of subset) {
+      rows.push([
+        l.url,
+        l.sourceUrl,
+        l.anchor_text,
+        l.__kind,
+        l.is_dofollow ? "Dofollow" : "Nofollow",
+        l.health || "unknown",
+        String(l.__priority),
+        String(l.status_code ?? ""),
+        String(l.response_time_ms ?? ""),
+      ]);
     }
-    downloadCsv(`${kind}-links-selected.csv`, rows);
+    return rows;
+  }
+
+  function exportSelected() {
+    downloadCsv("links-selected.csv", linksToCsvRows(selectedLinks));
+  }
+
+  function downloadCurrentView() {
+    downloadCsv("links-filtered-view.csv", linksToCsvRows(sorted));
   }
 
   function copySelectedUrls() {
@@ -644,6 +585,18 @@ function LinkTable({
             }}
             className="min-w-[220px] flex-1 rounded-lg border border-[var(--seo-border-strong)] px-3 py-1.5 text-sm"
           />
+          <select
+            value={typeFilter}
+            onChange={(e) => {
+              setTypeFilter(e.target.value as TypeFilter);
+              setPage(0);
+            }}
+            className="rounded-lg border border-[var(--seo-border-strong)] px-3 py-1.5 text-sm"
+          >
+            <option value="all">Internal + External</option>
+            <option value="internal">Internal only</option>
+            <option value="external">External only</option>
+          </select>
           <select
             value={followFilter}
             onChange={(e) => {
@@ -721,6 +674,12 @@ function LinkTable({
             Show technical details
           </label>
           <span className="text-xs text-[var(--seo-muted)]">{sorted.length} link(s)</span>
+          <button
+            onClick={downloadCurrentView}
+            className="ml-auto rounded-lg bg-[var(--seo-accent)] px-3 py-1.5 text-xs font-semibold text-white"
+          >
+            Download This View ({sorted.length})
+          </button>
         </div>
       </Card>
 
@@ -753,6 +712,7 @@ function LinkTable({
               <th className="cursor-pointer px-4 py-3" onClick={() => toggleSort("url")}>
                 URL {sort.key === "url" ? (sort.dir === 1 ? "▲" : "▼") : ""}
               </th>
+              <th className="px-4 py-3">Type</th>
               {showSource ? <th className="px-4 py-3">Source Page</th> : null}
               <th className="px-4 py-3">Anchor Text</th>
               <th className="px-4 py-3">Follow</th>
@@ -764,7 +724,7 @@ function LinkTable({
               </th>
               {showDetails ? (
                 <>
-                  <th className="px-4 py-3">Type</th>
+                  <th className="px-4 py-3">Category</th>
                   <th className="px-4 py-3">Location</th>
                   <th className="cursor-pointer px-4 py-3" onClick={() => toggleSort("response_time_ms")}>
                     Response {sort.key === "response_time_ms" ? (sort.dir === 1 ? "▲" : "▼") : ""}
@@ -779,7 +739,7 @@ function LinkTable({
           <tbody>
             {pageLinks.map((l, i) => {
               const secGap = l.opens_new_tab && (!l.has_noopener || !l.has_noreferrer);
-              const explanation = explainLink(l, kind);
+              const explanation = explainLink(l, l.__kind);
               const isExpanded = expanded === i;
               return (
                 <Fragment key={i}>
@@ -788,6 +748,7 @@ function LinkTable({
                     <input type="checkbox" checked={selected.has(i)} onChange={() => toggleSelect(i)} />
                   </td>
                   <td className="max-w-xs truncate px-4 py-3 text-[var(--seo-subheading)]">{l.url}</td>
+                  <td className="px-4 py-3 capitalize">{l.__kind}</td>
                   {showSource ? (
                     <td className="max-w-[10rem] truncate px-4 py-3 text-xs text-[var(--seo-text-light)]">
                       {l.sourceUrl}
