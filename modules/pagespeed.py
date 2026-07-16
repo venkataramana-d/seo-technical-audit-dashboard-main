@@ -9,7 +9,7 @@ Provide an API key for higher quotas (25 000 req/day).
 import requests
 
 PSI_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
-PSI_TIMEOUT  = 90   # PSI fetches and renders the target page — needs extra headroom
+PSI_TIMEOUT  = 90   # PSI fetches and renders the target page: needs extra headroom
 PSI_RETRIES  = 2    # retry on timeout before giving up
 
 
@@ -27,7 +27,7 @@ def _score_to_status(score):
 def _extract_metric(audits, key):
     a = audits.get(key, {})
     return {
-        "value":        a.get("displayValue", "—"),
+        "value":        a.get("displayValue", "N/A"),
         "numericValue": a.get("numericValue"),
         "score":        a.get("score"),
         "status":       _score_to_status(a.get("score")),
@@ -84,13 +84,13 @@ def fetch_pagespeed(url, strategy="mobile", api_key=None):
                         "error": "Invalid URL or request rejected by PageSpeed Insights."}
             resp.raise_for_status()
             data = resp.json()
-            break  # success — exit retry loop
+            break  # success: exit retry loop
         except requests.exceptions.Timeout:
             last_error = f"PageSpeed Insights request timed out ({PSI_TIMEOUT}s) on attempt {attempt}/{PSI_RETRIES}."
             if attempt == PSI_RETRIES:
                 return {"success": False, "error_code": 0,
                         "error": f"PageSpeed Insights timed out after {PSI_RETRIES} attempts ({PSI_TIMEOUT}s each). "
-                                 f"Google's servers may be slow — try again in a moment."}
+                                 f"Google's servers may be slow, try again in a moment."}
             continue  # retry
         except Exception as e:
             return {"success": False, "error_code": 0, "error": str(e)}
@@ -113,9 +113,9 @@ def fetch_pagespeed(url, strategy="mobile", api_key=None):
     si   = _extract_metric(audits, "speed-index")
     ttfb = _extract_metric(audits, "server-response-time")
     inp  = _extract_metric(audits, "interaction-to-next-paint")
-    if not inp.get("value") or inp["value"] == "—":
+    if not inp.get("value") or inp["value"] == "N/A":
         inp = _extract_metric(audits, "experimental-interaction-to-next-paint")
-    if not inp.get("value") or inp["value"] == "—":
+    if not inp.get("value") or inp["value"] == "N/A":
         inp = {"value": "Not available", "numericValue": None, "score": None, "status": "info"}
 
     # Opportunities (audits that could save time/bytes)
@@ -136,7 +136,7 @@ def fetch_pagespeed(url, strategy="mobile", api_key=None):
             })
     opps.sort(key=lambda x: x["score"] or 0)
 
-    # Image sizes — pulled from Lighthouse audits so they work even on CDNs
+    # Image sizes: pulled from Lighthouse audits so they work even on CDNs
     # that block server-side requests (Cloudflare, Webflow, etc.)
     image_sizes = {}
     for _audit_key in ("network-requests",):

@@ -1,16 +1,17 @@
 """SEO Health Score calculation (0–100) with thematic category grouping."""
 
 WEIGHTS = {
-    "metadata":        0.18,
-    "headings":        0.09,
+    "metadata":        0.16,
+    "headings":        0.08,
     "canonical":       0.05,
     "indexability":    0.06,
     "url_structure":   0.05,
-    "content":         0.17,
-    "images":          0.08,
-    "internal_links":  0.13,
-    "external_links":  0.05,
-    "advanced":        0.09,   # mobile, schema, social, hreflang
+    "content":         0.15,
+    "images":          0.07,
+    "internal_links":  0.11,
+    "external_links":  0.04,
+    "advanced":        0.08,   # mobile, schema, social, hreflang
+    "site_health":     0.10,   # domain age, SSL, DNS/SPF/DMARC/MX, robots, sitemap
     "page_specific":   0.05,   # course / blog
 }
 
@@ -18,19 +19,30 @@ PENALTY = {
     "Critical": 25,
     "High":     15,
     "Medium":   8,
-    "Warning":  6,   # Warning < Medium — it is a caution, not a confirmed problem
+    "Warning":  6,   # Warning < Medium: it is a caution, not a confirmed problem
     "Low":      2,
 }
 
-# SEMrush-style thematic groupings
+# SEMrush-style thematic groupings.
+# NOTE: matching is substring (`keyword.lower() in category.lower()`), so keywords
+# must be substrings of the EXACT category strings the check modules emit (grep
+# `"category":` across modules/*.py). Past bug: keyword "Headings" never matched
+# the emitted category "Heading Structure" ("headings" is not a substring of
+# "heading structure"), silently dumping every heading finding into "Other";
+# likewise the mobile categories (Responsiveness/Usability/Navigation/User
+# Experience/Layout) and "Security" (mixed-content) had no keyword and fell to
+# "Other". Keep this table in sync with lib/aggregate.ts's THEMES.
 THEMES = {
     "Crawlability": ["Accessibility", "Redirects", "Indexability", "URL Structure"],
     "Metadata":     ["Metadata"],
-    "Content":      ["Content", "Headings", "Readability"],
+    "Content":      ["Content", "Heading", "Readability"],
     "Links":        ["Internal Links", "External Links"],
-    "Technical":    ["Canonical", "Technical", "Mobile", "Performance"],
+    "Technical":    ["Canonical", "Technical", "Mobile", "Performance",
+                     "Responsiveness", "Usability", "Navigation",
+                     "User Experience", "Layout"],
     "Social & Schema": ["Structured Data", "Social SEO", "International SEO"],
-    "Images":       ["Images"],
+    "Images":       ["Images", "Image SEO"],
+    "Site Health":  ["Site Health", "Security"],
     "Page-Specific": ["Course Content", "Blog Content", "Conversion"],
 }
 
@@ -45,20 +57,27 @@ def _category_score(issues):
 def calculate_seo_score(result):
     breakdown = {
         "metadata":       _category_score(result.get("metadata",    {}).get("issues", [])),
-        # Use heading_detail (deep checks) — heading{} is the legacy shallow checker
+        # Use heading_detail (deep checks): heading{} is the legacy shallow checker
         "headings":       _category_score(result.get("heading_detail", result.get("headings", {})).get("issues", [])),
         "canonical":      _category_score(result.get("canonical",   {}).get("issues", [])),
         "indexability":   _category_score(result.get("indexability",{}).get("issues", [])),
         "url_structure":  _category_score(result.get("url_structure",{}).get("issues", [])),
         "content":        _category_score(result.get("content",     {}).get("issues", [])),
-        # Use image_detail (deep checks) — images{} is the legacy shallow checker
+        # Use image_detail (deep checks): images{} is the legacy shallow checker
         "images":         _category_score(result.get("image_detail", result.get("images", {})).get("issues", [])),
         "internal_links": _category_score(result.get("internal_links",{}).get("issues", [])),
         "external_links": _category_score(result.get("external_links",{}).get("issues", [])),
+        # `mobile_audit` MUST be included here: its issues are appended to
+        # all_issues (auditor.py) so they show in the UI/counts/AI, but they were
+        # previously not in any scoring bucket — a mobile-broken page (missing
+        # viewport, intrusive interstitial) could still score 90+. Folded into
+        # the "advanced" bucket, matching the WEIGHTS comment above.
         "advanced":       _category_score(
                               result.get("advanced", {}).get("issues", []) +
-                              result.get("redirect_analysis", {}).get("issues", [])
+                              result.get("redirect_analysis", {}).get("issues", []) +
+                              result.get("mobile_audit", {}).get("issues", [])
                           ),
+        "site_health":    _category_score(result.get("site_health", {}).get("issues", [])),
         "page_specific":  _category_score(
                               result.get("course_audit", {}).get("issues", []) +
                               result.get("blog_audit",   {}).get("issues", [])

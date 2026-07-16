@@ -1,17 +1,21 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
 @import "tailwindcss";
 
-/* Design tokens ported from legacy-streamlit/assets/style.css (Bento Edition) */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Design tokens: modern-SaaS (Linear/Vercel) — restrained indigo accent,
+   hairline borders, subtle elevation, light default + dark override. */
 :root {
-  --seo-app-bg: #F0F2F7;
+  --seo-app-bg: #FAFAFB;
   --seo-card-bg: #FFFFFF;
-  --seo-card-bg-alt: #F8FAFC;
-  --seo-card-hover: #F1F5F9;
-  --seo-border: rgba(15, 23, 42, 0.08);
-  --seo-border-strong: rgba(15, 23, 42, 0.18);
-  --seo-shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
-  --seo-shadow-md: 0 4px 16px rgba(15, 23, 42, 0.10), 0 1px 4px rgba(15, 23, 42, 0.06);
-  --seo-shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.14);
+  --seo-card-bg-alt: #F7F8FA;
+  --seo-card-hover: #F4F5F7;
+  --seo-border: rgba(15, 23, 42, 0.07);
+  --seo-border-strong: rgba(15, 23, 42, 0.14);
+  /* Hairline-first elevation: a crisp border does most of the work, the shadow
+     is a whisper. Heavy drop shadows read as "template", not "product". */
+  --seo-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --seo-shadow-md: 0 2px 8px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --seo-shadow-lg: 0 8px 24px rgba(15, 23, 42, 0.10);
 
   --seo-heading: #0F172A;
   --seo-subheading: #1E293B;
@@ -20,50 +24,88 @@
   --seo-muted: #94A3B8;
   --seo-placeholder: #CBD5E1;
 
-  --seo-accent: #0369A1;
-  --seo-accent-2: #0284C7;
-  --seo-accent-light: rgba(3, 105, 161, 0.07);
-  --seo-accent-border: rgba(3, 105, 161, 0.22);
-  --seo-gradient: linear-gradient(135deg, #0F172A, #1E3A5F);
+  --seo-accent: #6366F1;
+  --seo-accent-2: #8B5CF6;
+  --seo-accent-light: rgba(99, 102, 241, 0.08);
+  --seo-accent-border: rgba(99, 102, 241, 0.24);
+  --seo-gradient: linear-gradient(135deg, #6366F1, #8B5CF6);
 
-  --seo-success: #059669;
-  --seo-success-bg: rgba(5, 150, 105, 0.08);
-  --seo-success-border: rgba(5, 150, 105, 0.20);
-  --seo-warning: #D97706;
-  --seo-warning-bg: rgba(217, 119, 6, 0.08);
-  --seo-warning-border: rgba(217, 119, 6, 0.20);
-  --seo-error: #DC2626;
-  --seo-error-bg: rgba(220, 38, 38, 0.08);
-  --seo-error-border: rgba(220, 38, 38, 0.20);
-  --seo-info: #0369A1;
-  --seo-info-bg: rgba(3, 105, 161, 0.07);
-  --seo-info-border: rgba(3, 105, 161, 0.18);
+  --seo-success: #10B981;
+  --seo-success-bg: rgba(16, 185, 129, 0.08);
+  --seo-success-border: rgba(16, 185, 129, 0.20);
+  --seo-warning: #F59E0B;
+  --seo-warning-bg: rgba(245, 158, 11, 0.08);
+  --seo-warning-border: rgba(245, 158, 11, 0.20);
+  --seo-error: #EF4444;
+  --seo-error-bg: rgba(239, 68, 68, 0.08);
+  --seo-error-border: rgba(239, 68, 68, 0.20);
+  --seo-info: #6366F1;
+  --seo-info-bg: rgba(99, 102, 241, 0.07);
+  --seo-info-border: rgba(99, 102, 241, 0.18);
 
-  --sev-critical: #DC2626;
-  --sev-critical-bg: rgba(220, 38, 38, 0.08);
-  --sev-high: #EA580C;
-  --sev-high-bg: rgba(234, 88, 12, 0.08);
-  --sev-warning: #D97706;
-  --sev-warning-bg: rgba(217, 119, 6, 0.08);
+  --sev-critical: #EF4444;
+  --sev-critical-bg: rgba(239, 68, 68, 0.08);
+  --sev-high: #F97316;
+  --sev-high-bg: rgba(249, 115, 22, 0.08);
+  --sev-warning: #F59E0B;
+  --sev-warning-bg: rgba(245, 158, 11, 0.08);
   --sev-medium: #CA8A04;
   --sev-medium-bg: rgba(202, 138, 4, 0.08);
-  --sev-low: #0369A1;
-  --sev-low-bg: rgba(3, 105, 161, 0.08);
+  --sev-low: #6366F1;
+  --sev-low-bg: rgba(99, 102, 241, 0.08);
 
-  --cwv-good-bg: rgba(5, 150, 105, 0.09);
+  --cwv-good-bg: rgba(16, 185, 129, 0.09);
   --cwv-good-text: #065F46;
-  --cwv-needs-bg: rgba(217, 119, 6, 0.09);
+  --cwv-needs-bg: rgba(245, 158, 11, 0.09);
   --cwv-needs-text: #92400E;
-  --cwv-poor-bg: rgba(220, 38, 38, 0.09);
+  --cwv-poor-bg: rgba(239, 68, 68, 0.09);
   --cwv-poor-text: #991B1B;
 
   --table-header-bg: #F8FAFC;
   --table-row-border: rgba(15, 23, 42, 0.06);
-  --table-row-hover: rgba(3, 105, 161, 0.03);
+  --table-row-hover: rgba(99, 102, 241, 0.03);
 
-  --seo-banner-bg: linear-gradient(135deg, #0F172A 0%, #1E3A5F 100%);
-  --seo-banner-text: #F1F5F9;
-  --seo-banner-muted: #94A3B8;
+  --seo-banner-bg: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
+  --seo-banner-text: #F5F3FF;
+  --seo-banner-muted: #C4B5FD;
+
+  /* Tighter radius scale — an "app" reads tighter than a marketing site. */
+  --seo-radius: 10px;
+  --seo-radius-lg: 14px;
+  --seo-radius-sm: 8px;
+  --seo-radius-pill: 6px;
+
+  --seo-score-track: #E9EBF0;
+
+  --font-inter-stack: var(--font-inter), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono-stack: var(--font-jetbrains-mono), ui-monospace, "SF Mono",
+    "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+.dark {
+  --seo-app-bg: #08080B;
+  --seo-card-bg: #121216;
+  --seo-card-bg-alt: #17171C;
+  --seo-card-hover: #1D1D23;
+  --seo-border: rgba(255, 255, 255, 0.09);
+  --seo-border-strong: rgba(255, 255, 255, 0.16);
+
+  --seo-heading: #F5F5FA;
+  --seo-subheading: #E4E4EF;
+  --seo-text: #C7C7D9;
+  --seo-text-light: #A5A5BD;
+  --seo-muted: #7A7A95;
+  --seo-placeholder: #4B4B63;
+
+  --seo-accent-light: rgba(99, 102, 241, 0.16);
+  --seo-accent-border: rgba(99, 102, 241, 0.36);
+
+  --table-header-bg: #1B1B27;
+  --table-row-border: rgba(255, 255, 255, 0.06);
+  --table-row-hover: rgba(99, 102, 241, 0.08);
+
+  --seo-score-track: #26263A;
 }
 
 @theme inline {
@@ -105,23 +147,126 @@
   --color-sev-low: var(--sev-low);
   --color-sev-low-bg: var(--sev-low-bg);
 
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-sans: var(--font-inter-stack);
+  --font-mono: var(--font-mono-stack);
 }
 
 body {
   background: var(--seo-app-bg);
   color: var(--seo-text);
   font-family: var(--font-sans);
+  /* Inter character-variant + contextual features for a sharper UI read. */
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Data numerals (scores, counts, metrics) line up in columns and don't jitter
+   when they change — apply to any numeric display element. */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Break an element out of its centered max-width parent to span the full
+   viewport width (used by the wide Results table so all columns + full URLs are
+   visible without horizontal scroll). Pair with horizontal padding inside. */
+.full-bleed {
+  width: 100vw;
+  margin-left: calc(50% - 50vw);
+  margin-right: calc(50% - 50vw);
+}
+
+.font-mono {
+  font-family: var(--font-mono);
 }
 
 .card {
   background: var(--seo-card-bg);
   border: 1px solid var(--seo-border);
-  border-radius: 0.75rem;
+  border-radius: var(--seo-radius);
   box-shadow: var(--seo-shadow-sm);
+  transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .banner {
   background: var(--seo-banner-bg);
   color: var(--seo-banner-text);
+}
+
+.gradient-text {
+  background: var(--seo-gradient);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Primary button. Flat accent fill, hairline-tinted inner highlight, whisper of
+   shadow — the old version glowed with a 20px violet halo that read as a
+   marketing CTA, not an app control. Class name kept (used across the app). */
+.btn-gradient {
+  background: var(--seo-accent);
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.btn-gradient:hover {
+  background: color-mix(in srgb, var(--seo-accent) 88%, #000);
+}
+
+.btn-gradient:active {
+  background: color-mix(in srgb, var(--seo-accent) 80%, #000);
+}
+
+.btn-gradient:focus-visible {
+  outline: 2px solid var(--seo-accent);
+  outline-offset: 2px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border-radius: var(--seo-radius-pill);
+  padding: 0.12rem 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0.005em;
+}
+
+/* Tight tracking on headings/large text is the single biggest "modern SaaS"
+   typography tell (Inter at display sizes wants slightly negative tracking). */
+h1, h2, h3, .track-tight {
+  letter-spacing: -0.014em;
+}
+
+/* CSS conic-gradient score circle. Usage: <div class="score-circle" style="--score-color:#10B981;--score-deg:324deg"><span>90</span></div> */
+.score-circle {
+  --score-size: 72px;
+  position: relative;
+  width: var(--score-size);
+  height: var(--score-size);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: conic-gradient(var(--score-color) var(--score-deg), var(--seo-score-track) 0deg);
+}
+
+.score-circle::before {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  border-radius: 50%;
+  background: var(--seo-card-bg);
+}
+
+.score-circle span {
+  position: relative;
+  z-index: 1;
+  font-weight: 700;
+  color: var(--seo-heading);
+  font-size: calc(var(--score-size) * 0.28);
 }

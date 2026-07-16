@@ -20,10 +20,28 @@ HEADING_COLORS = {
 
 
 def _extract_headings(soup):
-    """Extract all h1-h6 tags in document order with metadata."""
+    """Extract all h1-h6 tags in document order with metadata.
+
+    Only headings inside the actual article content count: nav/footer/aside are
+    stripped first, so the tree doesn't pick up site-wide navigation or "related
+    posts"/"you might also like" widget headings that typically follow the
+    article's real conclusion.
+
+    NOTE: `<header>` is deliberately NOT stripped. The single most common
+    semantic-HTML pattern for a page/article title is `<header><h1>Title</h1>
+    </header>` (and `<article><header class="entry-header"><h1>…` in most CMS
+    themes). Stripping `<header>` removed that H1, so a perfectly valid page
+    with exactly one correctly-placed H1 was flagged with a Critical "Missing
+    H1 heading" (and spurious "No H2 despite H1" / skipped-level) false
+    positive. Site-chrome headings live in `<nav>`/`<footer>`, not `<header>`.
+    """
+    content_soup = soup.__class__(str(soup), "lxml")
+    for tag in content_soup(["nav", "footer", "aside"]):
+        tag.decompose()
+
     headings = []
     position = 0
-    for tag in soup.find_all(re.compile(r"^h[1-6]$")):
+    for tag in content_soup.find_all(re.compile(r"^h[1-6]$")):
         level = int(tag.name[1])
         text = tag.get_text(separator=" ", strip=True)
         id_attr = tag.get("id", None)
@@ -163,7 +181,7 @@ def _build_tree_html(headings):
             if not stack or stack[-1] != level:
                 open_level(level)
         else:
-            # Same level — ensure list is open
+            # Same level: ensure list is open
             if not stack or stack[-1] != level:
                 open_level(level)
 
@@ -233,7 +251,7 @@ def _build_issues(headings, counts, violations, empty_headings, duplicate_headin
                 "effort": "Low",
             })
 
-    # Skipped heading levels — one issue per violation
+    # Skipped heading levels: one issue per violation
     for v in violations:
         issues.append({
             "issue": (
@@ -256,7 +274,7 @@ def _build_issues(headings, counts, violations, empty_headings, duplicate_headin
             "issue": f"Empty heading detected ({len(empty_headings)} found)",
             "category": "Heading Structure",
             "severity": "Medium",
-            "recommendation": "Remove or fill empty heading tags — they confuse screen readers and crawlers.",
+            "recommendation": "Remove or fill empty heading tags: they confuse screen readers and crawlers.",
             "impact_score": 6,
             "effort": "Low",
         })

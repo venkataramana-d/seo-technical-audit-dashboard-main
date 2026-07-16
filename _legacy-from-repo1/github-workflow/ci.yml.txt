@@ -1,0 +1,58 @@
+name: CI
+
+# Build+test gate for the frontend (Next.js) and backend (Python serverless
+# handlers), replacing an implicit "Vercel just builds it on deploy" flow with
+# explicit CI that runs on every push/PR. Deployment itself is unchanged:
+# Vercel's own Git integration still auto-deploys on push to main.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  frontend:
+    name: Frontend (typecheck, lint, test, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests (vitest)
+        run: npm test
+
+      - name: Build (next build)
+        run: npm run build
+
+  backend:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        # Opt-in live tests (RUN_LIVE_TESTS=1) hit real sites and stay
+        # skipped in CI; see PROJECT_LOG.md.
+        run: python -m pytest -q

@@ -4,7 +4,7 @@ Advanced image SEO analysis for SEO Technical Audit Dashboard.
 """
 
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urljoin, urlparse
 
@@ -13,6 +13,8 @@ try:
     REQUESTS_AVAILABLE = True
 except ImportError:
     REQUESTS_AVAILABLE = False
+
+from modules.auditor import safe_request
 
 
 # ---------------------------------------------------------------------------
@@ -25,8 +27,13 @@ GENERIC_ALT_PATTERNS = {
     "untitled",
 }
 
+# A generic auto-generated filename stem. The token must be followed by a digit,
+# a separator, or end-of-stem so ordinary words that merely START with these
+# letters are not flagged: "photography-guide" / "imagery-hero" / "imagine" are
+# descriptive filenames, not "photo"/"image"/"img" boilerplate. Prior pattern
+# used `\d*` (zero-or-more) with no boundary, so `^photo` matched "photography".
 BAD_NAMING_RE = re.compile(
-    r"^(img|image|dsc|screenshot|untitled|photo)\d*|image-final|IMG_\d+",
+    r"^(img|image|dsc|screenshot|untitled|photo)(\d+|[-_ ]|$)|IMG_\d+",
     re.IGNORECASE,
 )
 
@@ -70,14 +77,23 @@ def _file_size_label(size_bytes):
 
 
 def _is_keyword_stuffed(alt_text):
-    """Flag if alt text > 100 chars or if more than 6 words are all the same."""
-    if len(alt_text) > 100:
+    """Keyword stuffing is REPEATING keywords to game ranking, not merely long
+    or descriptive alt text. The prior heuristic flagged any alt over 100 chars,
+    which mislabeled long *descriptive* alt (e.g. "Team collaborating in a modern
+    office during a corporate leadership training workshop") as stuffed — a false
+    positive seen across the site. Detect real repetition instead: a content word
+    repeated 3+ times, or low lexical diversity on a multi-word alt.
+    """
+    words = re.findall(r"[a-z0-9]+", alt_text.lower())
+    if len(words) < 5:
+        return False
+    counts = Counter(words)
+    # A meaningful content word (len > 3, i.e. not "the"/"and"/"of") repeated 3+ times.
+    if any(count >= 3 and len(word) > 3 for word, count in counts.items()):
         return True
-    words = alt_text.lower().split()
-    if len(words) > 6:
-        unique = set(words)
-        if len(unique) == 1:
-            return True
+    # Very low unique-word ratio on a longer alt = padded with repeats.
+    if len(words) >= 8 and len(set(words)) / len(words) < 0.5:
+        return True
     return False
 
 
@@ -132,9 +148,9 @@ def _fetch_size(url, referer=None):
     {"reachable": bool, "status_code": int|None, "error": str|None}.
 
     Strategy:
-    1. HEAD — fast, no body download.
-    2. Range GET bytes=0-1 — extracts total from Content-Range header.
-    3. Streaming GET — reads only response headers, no body download.
+    1. HEAD: fast, no body download.
+    2. Range GET bytes=0-1: extracts total from Content-Range header.
+    3. Streaming GET: reads only response headers, no body download.
     """
     if not REQUESTS_AVAILABLE:
         return url, None, {"reachable": None, "status_code": None, "error": "requests unavailable"}
@@ -154,17 +170,27 @@ def _fetch_size(url, referer=None):
         except _r.exceptions.SSLError:
             return method(*args, **kwargs, verify=False)
 
+    def _safe_fetch(method, target_url, *, max_redirects=5, **kwargs):
+        """SSRF-safe fetch with a TLS-verify fallback: shares
+        `auditor.safe_request`'s per-hop redirect re-validation, wrapping
+        `method` so each attempt still gets the verify=True-then-False retry
+        image size-checking needs (self-signed certs are common on the sites
+        this audits)."""
+        return safe_request(
+            lambda u, **kw: _get(method, u, **kw), target_url, max_redirects=max_redirects, **kwargs
+        )
+
     try:
         # ── 1. HEAD ───────────────────────────────────────────────────────
-        r = _get(requests.head, url, timeout=10, allow_redirects=True, headers=hdrs)
+        r = _safe_fetch(requests.head, url, timeout=10, headers=hdrs)
         if r.status_code < 400:
             sz = _cl(r.headers)
             if sz:
                 return url, sz, {"reachable": True, "status_code": r.status_code, "error": None}
 
         # ── 2. Range GET ──────────────────────────────────────────────────
-        r2 = _get(requests.get, url, timeout=10, allow_redirects=True,
-                  headers={**hdrs, "Range": "bytes=0-1"}, stream=True)
+        r2 = _safe_fetch(requests.get, url, timeout=10,
+                         headers={**hdrs, "Range": "bytes=0-1"}, stream=True)
         r2.close()
         if r2.status_code in (200, 206):
             status2 = {"reachable": True, "status_code": r2.status_code, "error": None}
@@ -178,10 +204,9 @@ def _fetch_size(url, referer=None):
                 return url, sz, status2
 
         # ── 3. Streaming GET (headers only, no body) ──────────────────────
-        r3 = _get(requests.get, url, timeout=10, allow_redirects=True,
-                  headers=hdrs, stream=True)
+        r3 = _safe_fetch(requests.get, url, timeout=10, headers=hdrs, stream=True)
         r3.close()
-        # Use the LAST attempted status code for reachability — a 200 here
+        # Use the LAST attempted status code for reachability: a 200 here
         # means the image is fine even if size couldn't be determined; a 4xx/5xx
         # across every attempt means the image genuinely doesn't load.
         final_code = r3.status_code
@@ -217,7 +242,7 @@ def _extract_image_data(soup, base_url):
     images = []
 
     for tag in soup.find_all(["img", "source"]):
-        # A <source> tag is only image-related inside <picture> — inside
+        # A <source> tag is only image-related inside <picture>: inside
         # <audio>/<video> it points to audio/video media, not an image.
         if tag.name == "source" and tag.find_parent("picture") is None:
             continue
@@ -259,18 +284,24 @@ def _extract_image_data(soup, base_url):
         nq = _naming_quality(name)
 
         per_image_issues = []
-        if a_status == "missing":
-            per_image_issues.append("Missing alt text")
-        elif a_status == "empty":
-            per_image_issues.append("Empty alt text")
-        elif a_status == "generic":
-            per_image_issues.append("Generic alt text")
-        elif a_status == "keyword_stuffed":
-            per_image_issues.append("Keyword-stuffed alt text")
-        if not has_lazy:
-            per_image_issues.append("Missing lazy loading")
-        if not has_dimensions:
-            per_image_issues.append("Missing width/height dimensions")
+        # alt / lazy-loading / width-height only apply to the rendered <img>. A
+        # <picture>'s <source> elements never carry alt, loading, or width/height
+        # (those belong on the fallback <img>), so running these checks on a
+        # <source> produced phantom "Missing alt / dimensions / lazy loading"
+        # issues for every correctly-authored responsive <picture>.
+        if tag.name == "img":
+            if a_status == "missing":
+                per_image_issues.append("Missing alt text")
+            elif a_status == "empty":
+                per_image_issues.append("Empty alt text")
+            elif a_status == "generic":
+                per_image_issues.append("Generic alt text")
+            elif a_status == "keyword_stuffed":
+                per_image_issues.append("Keyword-stuffed alt text")
+            if not has_lazy:
+                per_image_issues.append("Missing lazy loading")
+            if not has_dimensions:
+                per_image_issues.append("Missing width/height dimensions")
         if nq == "bad":
             per_image_issues.append("Poor filename convention")
         if ext in ("jpg", "jpeg", "png"):
@@ -278,6 +309,7 @@ def _extract_image_data(soup, base_url):
 
         images.append({
             "url": url,
+            "tag_name": tag.name,  # "img" or "source" (see _compute_summary)
             "name": name,
             "extension": ext,
             "format_label": format_label,
@@ -291,7 +323,7 @@ def _extract_image_data(soup, base_url):
             "is_in_picture": is_in_picture,
             "naming_quality": nq,
             "file_size_bytes": None,
-            "file_size_label": "—",
+            "file_size_label": "N/A",
             "status_code": None,
             "is_broken": None,
             "fetch_error": None,
@@ -305,7 +337,7 @@ def _extract_image_data(soup, base_url):
 def _mark_lcp_candidate(images):
     """
     Mark the image most likely to be the page's LCP element.
-    SVGs are excluded — browsers never report an SVG as the LCP element.
+    SVGs are excluded: browsers never report an SVG as the LCP element.
     Prefers the largest raster image by pixel area; falls back to the
     first non-SVG HTTP image.
     """
@@ -356,8 +388,17 @@ def _populate_sizes(images, max_size_checks, base_url=""):
             size_bytes, status = status_map[url]
             img["file_size_bytes"] = size_bytes
             img["file_size_label"] = _file_size_label(size_bytes)
-            img["status_code"] = status.get("status_code")
-            img["is_broken"] = status.get("reachable") is False
+            code = status.get("status_code")
+            img["status_code"] = code
+            # Only a genuinely dead resource is "broken": 404/410 or a hard 5xx.
+            # 401/403 (hotlink protection / WAF), 429 (rate limit), 503
+            # (transient), and timeout/SSL/connection failures (status_code None)
+            # mean "could not verify from a bot" — not that the image is missing
+            # in a real browser. Marking those broken flagged perfectly visible
+            # CDN/hotlink-protected images as "fails to load".
+            img["is_broken"] = code in (404, 410) or (
+                code is not None and 500 <= code < 600 and code != 503
+            )
             img["fetch_error"] = status.get("error")
 
             if img["is_broken"] and "Broken image (does not load)" not in img["issues"]:
@@ -371,12 +412,16 @@ def _populate_sizes(images, max_size_checks, base_url=""):
 def _compute_summary(images, check_sizes):
     """Compute aggregate summary counts."""
     total = len(images)
-    missing_alt = sum(1 for i in images if i["alt_status"] == "missing")
-    empty_alt = sum(1 for i in images if i["alt_status"] == "empty")
-    generic_alt = sum(1 for i in images if i["alt_status"] == "generic")
-    keyword_stuffed_alt = sum(1 for i in images if i["alt_status"] == "keyword_stuffed")
-    no_lazy = sum(1 for i in images if not i["has_lazy"])
-    no_dimensions = sum(1 for i in images if not i["has_dimensions"])
+    # alt / lazy / dimensions are <img>-only attributes; a <picture>'s <source>
+    # never carries them, so counting <source> here inflated every count and
+    # emitted "Missing alt/dimensions/lazy on N image(s)" false positives.
+    imgs = [i for i in images if i.get("tag_name", "img") == "img"]
+    missing_alt = sum(1 for i in imgs if i["alt_status"] == "missing")
+    empty_alt = sum(1 for i in imgs if i["alt_status"] == "empty")
+    generic_alt = sum(1 for i in imgs if i["alt_status"] == "generic")
+    keyword_stuffed_alt = sum(1 for i in imgs if i["alt_status"] == "keyword_stuffed")
+    no_lazy = sum(1 for i in imgs if not i["has_lazy"])
+    no_dimensions = sum(1 for i in imgs if not i["has_dimensions"])
     non_webp = sum(1 for i in images if i["extension"] in ("jpg", "jpeg", "png"))
     bad_naming = sum(1 for i in images if i["naming_quality"] == "bad")
 
@@ -433,12 +478,14 @@ def _build_issues(summary, check_sizes):
         })
 
     if n["empty_alt"] > 0:
+        # alt="" is correct for decorative images (WCAG); advisory, not a
+        # confirmed problem. See the matching note in modules/auditor.py.
         issues.append({
-            "issue": f"Empty alt text on {n['empty_alt']} image(s)",
+            "issue": f"Empty alt text on {n['empty_alt']} image(s) (verify decorative)",
             "category": "Image SEO",
-            "severity": "Medium",
-            "recommendation": "Provide meaningful alt text; use alt='' only for purely decorative images.",
-            "impact_score": 5,
+            "severity": "Low",
+            "recommendation": "Empty alt='' is correct for decorative images. Add a description only for images that convey meaning.",
+            "impact_score": 2,
             "effort": "Low",
         })
 
@@ -517,7 +564,7 @@ def _build_issues(summary, check_sizes):
             "issue": f"{n['broken_images']} image(s) fail to load",
             "category": "Image SEO",
             "severity": "Critical",
-            "recommendation": "Fix or remove broken image references — check the URL is correct and the file still exists on the server.",
+            "recommendation": "Fix or remove broken image references: check the URL is correct and the file still exists on the server.",
             "impact_score": 9,
             "effort": "Low",
         })
@@ -568,7 +615,7 @@ def analyze_images_advanced(soup, base_url="", check_sizes=False, max_size_check
     """
     images = _extract_image_data(soup, base_url)
     _mark_lcp_candidate(images)
-    # LCP image must NOT be lazy-loaded — remove that per-image issue for it
+    # LCP image must NOT be lazy-loaded: remove that per-image issue for it
     for img in images:
         if img.get("is_lcp_candidate"):
             img["issues"] = [i for i in img.get("issues", []) if i != "Missing lazy loading"]

@@ -7,7 +7,9 @@ from urllib.parse import urlparse, urljoin
 import requests
 from bs4 import BeautifulSoup
 
-# Browser-like headers — avoids 403/999 bot blocks on LinkedIn, McKinsey, etc.
+from modules.auditor import BlockedURLError, safe_request, validate_audit_url
+
+# Browser-like headers: avoids 403/999 bot blocks on LinkedIn, McKinsey, etc.
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -26,7 +28,7 @@ TIMEOUT = 8
 _session = requests.Session()
 _session.headers.update(HEADERS)
 
-# Sites that always block HEAD/GET with non-standard codes — don't count as "broken"
+# Sites that always block HEAD/GET with non-standard codes: don't count as "broken"
 KNOWN_BLOCKER_DOMAINS = {
     "linkedin.com", "www.linkedin.com",
     "twitter.com", "x.com", "www.twitter.com",
@@ -38,9 +40,13 @@ KNOWN_BLOCKER_DOMAINS = {
 WEAK_ANCHORS = {
     "click here", "here", "read more", "learn more", "link",
     "this", "more", "see more", "see here", "visit", "go here",
-    "continue", "source", "website", "url", "page", "article",
+    "continue", "website", "url", "page", "article",
     "post", "check out", "check this", "find out", "more info",
-    "click", "view", "details", "info", "example", "download",
+    "click", "view", "details", "info",
+    # NOTE: "source", "download", and "example" were removed — on a citation
+    # ("Source"), a file link ("Download"), or a demo link ("Example") they are
+    # contextually descriptive, not generic filler, and flagging them produced
+    # weak-anchor false positives.
 }
 
 # Domain type categories for external link classification
@@ -78,7 +84,12 @@ def get_full_domain(url):
 
 def categorize_domain(domain):
     """Return a category label for an external domain."""
-    d = domain.lower().lstrip("www.")
+    # `lstrip("www.")` strips any leading run of the CHARACTERS w/./., so it
+    # corrupted domains like "worldbank.org" -> "orldbank.org"; strip the literal
+    # "www." prefix instead.
+    d = domain.lower()
+    if d.startswith("www."):
+        d = d[4:]
     for cat, domains in DOMAIN_CATEGORIES.items():
         if d in domains:
             return cat.title()
@@ -128,26 +139,49 @@ def status_label(code):
 def link_health(code, domain=""):
     """
     Classify link health:
-      ok       — 2xx
-      redirect — 3xx
-      blocked  — 999, 403 on known social/professional sites
-      broken   — 4xx (not blocked), 5xx, 0 (connection error)
-      unknown  — None (not validated)
+      ok       : 2xx
+      redirect : 3xx
+      blocked  : 401/403 (auth / WAF / bot-challenge), 408/429 (rate-limit),
+                 451, 503 (unavailable/maintenance), 999 — the server is alive
+                 but refused or throttled our bot request; NOT a dead link
+      broken   : 404, 410, and 500/502/504 — a genuinely dead or erroring resource
+      unknown  : None (not validated), 0 (timeout/connection/SSL — could not verify)
+
+    Prior versions bucketed 403 (unless on a tiny hard-coded social-domain
+    allowlist), 429, 503, and every connection failure as "broken", so a link to
+    any Cloudflare/WAF-protected site, a rate-limited API host, or a slow server
+    that timed out during the 12-worker burst was reported as a broken link on a
+    page that has no broken links. "blocked"/"unknown" are excluded from the
+    broken count so those false positives no longer fire.
     """
-    if code is None:
+    if code is None or code == 0:
         return "unknown"
-    if code == 0:
-        return "broken"
-    base = get_base_domain(domain or "")
-    if code == 999 or (code == 403 and base in KNOWN_BLOCKER_DOMAINS):
+    if code in (401, 403, 408, 429, 451, 503, 999):
         return "blocked"
     if 200 <= code < 300:
         return "ok"
     if 300 <= code < 400:
         return "redirect"
-    if code >= 400:
+    if code in (404, 410) or 500 <= code < 600:
         return "broken"
+    if 400 <= code < 500:
+        # Other 4xx (400/405/406/…): an access/protocol refusal, not a confirmed
+        # dead resource. Treat as blocked so it doesn't inflate the broken count.
+        return "blocked"
     return "unknown"
+
+
+def _resolve_href(href, base_url):
+    """Resolve an <a href> to an absolute URL. Handles the scheme-relative
+    `//host/path` form explicitly, since `urljoin` alone doesn't special-case
+    it the way this needs (was duplicated identically in parse_link_tag and
+    linkify_paragraph_html before being pulled out here)."""
+    if href.startswith("//"):
+        scheme = urlparse(base_url).scheme or "https"
+        return scheme + ":" + href
+    if href.startswith(("http://", "https://")):
+        return href
+    return urljoin(base_url, href)
 
 
 def classify_link(href, base_url):
@@ -166,7 +200,7 @@ def classify_link(href, base_url):
 
 
 # Extensions used to tag a page/internal/external link with a more specific
-# link_category than just "page" — purely extension-based, no content sniffing.
+# link_category than just "page": purely extension-based, no content sniffing.
 _DOC_EXTENSIONS = {
     "pdf": "pdf",
     "doc": "download", "docx": "download",
@@ -202,7 +236,7 @@ _LOCATION_SELECTORS = (
 
 def classify_link_location(tag):
     """Walk up the DOM to classify where a link sits: nav / header / footer / sidebar /
-    breadcrumb / body. Heuristic — based on tag names and common class/id naming, not a
+    breadcrumb / body. Heuristic, based on tag names and common class/id naming, not a
     layout-rendering analysis."""
     node = tag
     depth = 0
@@ -230,7 +264,7 @@ def classify_link_location(tag):
 
 
 def parse_special_link_tag(tag, base_url, kind):
-    """Parse mailto: / tel: / #anchor / javascript: links — no HTTP validation applies."""
+    """Parse mailto: / tel: / #anchor / javascript: links: no HTTP validation applies."""
     href = tag.get("href", "").strip()
     anchor = tag.get_text(strip=True) or "[No Text]"
     return {
@@ -246,13 +280,7 @@ def parse_link_tag(tag, base_url):
     if not href or href.startswith(("#", "mailto:", "tel:", "javascript:", "data:")):
         return None
 
-    if href.startswith("//"):
-        scheme = urlparse(base_url).scheme or "https"
-        full_url = scheme + ":" + href
-    elif href.startswith("http"):
-        full_url = href
-    else:
-        full_url = urljoin(base_url, href)
+    full_url = _resolve_href(href, base_url)
 
     rel_attr = tag.get("rel", [])
     if isinstance(rel_attr, str):
@@ -314,6 +342,24 @@ def validate_url(url):
     domain = get_full_domain(url)
     base   = get_base_domain(url)
 
+    # SSRF guard: links come from untrusted third-party page HTML. Refuse to
+    # HTTP-check any URL pointing at a private/reserved/internal host (directly
+    # or via DNS), so a crafted <a href="http://169.254.169.254/..."> can't be
+    # used to probe internal services.
+    ok, _ssrf_msg = validate_audit_url(url)
+    if not ok:
+        return {
+            "url": url,
+            "status_code": 0,
+            "status_label": "Blocked (internal address)",
+            "health": "blocked",
+            "is_broken": False,
+            "is_redirect": False,
+            "final_url": url,
+            "redirect_count": 0,
+            "note": "Skipped: refuses to fetch private/internal addresses",
+        }
+
     if base in KNOWN_BLOCKER_DOMAINS:
         return {
             "url": url,
@@ -324,32 +370,62 @@ def validate_url(url):
             "is_redirect": False,
             "final_url": url,
             "redirect_count": 0,
-            "note": "Skipped — site blocks automated requests",
+            "note": "Skipped: site blocks automated requests",
         }
 
     ssl_error = False
-    try:
+
+    def _get_with_ssl_fallback(method, u, **kwargs):
+        nonlocal ssl_error
         try:
-            resp = _session.head(
-                url, timeout=TIMEOUT, allow_redirects=True, verify=True
-            )
+            return method(u, **kwargs, verify=True)
         except requests.exceptions.SSLError:
             ssl_error = True
-            resp = _session.head(
-                url, timeout=TIMEOUT, allow_redirects=True, verify=False
+            return method(u, **kwargs, verify=False)
+
+    try:
+        # SSRF guard, part 2: the check above only validates the URL as
+        # given. `allow_redirects=True` used to let `requests` follow
+        # redirects unguarded from there, so a link that passed the initial
+        # check but 301'd to an internal/metadata host would be fetched
+        # anyway. `safe_request` re-validates every hop before requesting it.
+        try:
+            resp = safe_request(
+                lambda u, **kw: _get_with_ssl_fallback(_session.head, u, **kw),
+                url, timeout=TIMEOUT,
             )
+        except BlockedURLError:
+            return {
+                "url": url,
+                "status_code": 0,
+                "status_label": "Blocked (internal address)",
+                "health": "blocked",
+                "is_broken": False,
+                "is_redirect": False,
+                "final_url": url,
+                "redirect_count": 0,
+                "note": "Skipped: redirected to a private/internal address",
+            }
         code = resp.status_code
 
         if code in (405, 501):
             try:
-                resp = _session.get(
-                    url, timeout=TIMEOUT, allow_redirects=True, verify=True, stream=True
+                resp = safe_request(
+                    lambda u, **kw: _get_with_ssl_fallback(_session.get, u, **kw),
+                    url, timeout=TIMEOUT, stream=True,
                 )
-            except requests.exceptions.SSLError:
-                ssl_error = True
-                resp = _session.get(
-                    url, timeout=TIMEOUT, allow_redirects=True, verify=False, stream=True
-                )
+            except BlockedURLError:
+                return {
+                    "url": url,
+                    "status_code": 0,
+                    "status_label": "Blocked (internal address)",
+                    "health": "blocked",
+                    "is_broken": False,
+                    "is_redirect": False,
+                    "final_url": url,
+                    "redirect_count": 0,
+                    "note": "Skipped: redirected to a private/internal address",
+                }
             resp.close()
             code = resp.status_code
 
@@ -373,19 +449,24 @@ def validate_url(url):
             "ssl_error":        ssl_error,
         }
 
+    # Timeout / SSL / connection failures are transient or environmental (a slow
+    # server, a cold CDN, a cert quirk, a blip during the 12-worker burst) — they
+    # mean "could not verify", not "dead link". Marking them broken produced
+    # broken-link false positives on pages whose links are actually fine, so they
+    # are now "unknown" (is_broken False) and excluded from the broken count.
     except requests.exceptions.Timeout:
         return {"url": url, "status_code": 0, "status_label": "Timeout",
-                "health": "broken", "is_broken": True, "is_redirect": False,
+                "health": "unknown", "is_broken": False, "is_redirect": False,
                 "response_time_ms": TIMEOUT * 1000}
     except requests.exceptions.SSLError:
         return {"url": url, "status_code": 0, "status_label": "SSL Error",
-                "health": "broken", "is_broken": True, "is_redirect": False}
+                "health": "unknown", "is_broken": False, "is_redirect": False}
     except requests.exceptions.ConnectionError:
         return {"url": url, "status_code": 0, "status_label": "Connection Error",
-                "health": "broken", "is_broken": True, "is_redirect": False}
+                "health": "unknown", "is_broken": False, "is_redirect": False}
     except Exception as e:
         return {"url": url, "status_code": 0, "status_label": f"Error: {str(e)[:40]}",
-                "health": "broken", "is_broken": True, "is_redirect": False}
+                "health": "unknown", "is_broken": False, "is_redirect": False}
 
 
 def validate_urls_bulk(urls, max_workers=12):
@@ -462,8 +543,8 @@ def audit_links(soup, base_url, validate=False):
 
 # ── Body content link highlighting ────────────────────────────────────────
 
-INTERNAL_LINK_COLOR = "#1D4ED8"   # blue  — matches internal-link brand color elsewhere
-EXTERNAL_LINK_COLOR = "#7C3AED"   # purple — matches external-link brand color elsewhere
+INTERNAL_LINK_COLOR = "#1D4ED8"   # blue, matches internal-link brand color elsewhere
+EXTERNAL_LINK_COLOR = "#7C3AED"   # purple, matches external-link brand color elsewhere
 
 
 def linkify_paragraph_html(p_tag, base_url, max_chars=400):
@@ -491,7 +572,7 @@ def linkify_paragraph_html(p_tag, base_url, max_chars=400):
         if getattr(node, "name", None) == "a":
             href = (node.get("href") or "").strip()
             text = node.get_text(" ", strip=True)
-            is_linkable = href and text and not href.startswith(
+            is_linkable = href and text and not href.lower().startswith(
                 ("#", "mailto:", "tel:", "javascript:", "data:")
             )
             if not is_linkable:
@@ -503,13 +584,7 @@ def linkify_paragraph_html(p_tag, base_url, max_chars=400):
                     parts.append(_html.escape(clip))
                 continue
 
-            if href.startswith("//"):
-                scheme = urlparse(base_url).scheme or "https"
-                full_url = scheme + ":" + href
-            elif href.startswith(("http://", "https://")):
-                full_url = href
-            else:
-                full_url = urljoin(base_url, href)
+            full_url = _resolve_href(href, base_url)
 
             clip = text[:budget]
             if len(text) > budget:
@@ -574,7 +649,7 @@ def analyze_anchor_text(links):
             "type": "over_optimized",
             "anchor": top_anchor,
             "pct": round(top_cnt / total * 100, 1),
-            "message": f'"{top_anchor}" used on {round(top_cnt/total*100,1)}% of links — may look spammy to Google.',
+            "message": f'"{top_anchor}" used on {round(top_cnt/total*100,1)}% of links: may look spammy to Google.',
             "recommendation": "Vary your anchor text with natural phrases, branded terms, and partial-match keywords.",
         })
 
@@ -594,7 +669,7 @@ def analyze_anchor_text(links):
         opportunities.append({
             "type": "image_no_alt",
             "count": len(img_no_alt),
-            "message": f"{len(img_no_alt)} image link(s) have no alt text — search engines cannot read the anchor.",
+            "message": f"{len(img_no_alt)} image link(s) have no alt text: search engines cannot read the anchor.",
             "recommendation": "Add descriptive alt attributes to all linked images.",
             "links": [l.get("url","") for l in img_no_alt[:10]],
         })
@@ -615,9 +690,9 @@ def analyze_anchor_text(links):
             "count": unique_anchors,
             "message": f"Anchor text diversity: {unique_anchors} unique phrases across {total} links ({diversity}% unique).",
             "recommendation": (
-                "Good diversity — keep varying anchor text."
+                "Good diversity: keep varying anchor text."
                 if diversity > 60 else
-                "Low diversity — try using more unique, contextually relevant phrases per link."
+                "Low diversity: try using more unique, contextually relevant phrases per link."
             ),
             "links": [],
         })
@@ -662,7 +737,7 @@ def get_internal_link_opportunities(results_list):
             "type": "orphan_pages",
             "severity": "High",
             "count": len(orphan_pages),
-            "title": "Orphan Pages — No Internal Links Pointing To Them",
+            "title": "Orphan Pages: No Internal Links Pointing To Them",
             "message": f"{len(orphan_pages)} page(s) have zero internal inbound links from other audited pages.",
             "recommendation": "Link to these pages from relevant content to help search engines discover and crawl them.",
             "pages": orphan_pages[:10],
@@ -673,7 +748,7 @@ def get_internal_link_opportunities(results_list):
             "type": "low_inbound",
             "severity": "Medium",
             "count": len(low_link_pages),
-            "title": "Under-Linked Pages — Fewer Than 3 Internal Inbound Links",
+            "title": "Under-Linked Pages: Fewer Than 3 Internal Inbound Links",
             "message": f"{len(low_link_pages)} page(s) have fewer than 3 internal links pointing to them.",
             "recommendation": "Increase internal links to these pages to distribute link equity and improve crawl priority.",
             "pages": low_link_pages[:10],
@@ -712,7 +787,7 @@ def get_internal_link_opportunities(results_list):
                 "severity": "Critical",
                 "count": len(sources),
                 "title": "Broken Internal Link Target",
-                "message": f"'{target}' is broken — linked from {len(sources)} page(s).",
+                "message": f"'{target}' is broken, linked from {len(sources)} page(s).",
                 "recommendation": "Fix or redirect the broken target URL, or update all links pointing to it.",
                 "pages": sources[:5],
             })
@@ -766,7 +841,7 @@ def _summarize_internal(links):
         issues.append({
             "issue": f"Broken Internal Links ({broken})", "category": "Internal Links",
             "severity": "Critical", "impact_score": 9, "effort": "Low",
-            "recommendation": "Fix or remove all broken internal links immediately — they harm user experience and crawlability.",
+            "recommendation": "Fix or remove all broken internal links immediately: they harm user experience and crawlability.",
         })
     if redirect > 0:
         issues.append({
@@ -777,8 +852,11 @@ def _summarize_internal(links):
     if miss_no > 0:
         issues.append({
             "issue": f"Internal Links Opening in New Tab Without rel='noopener' ({miss_no})", "category": "Internal Links",
-            "severity": "Medium", "impact_score": 4, "effort": "Low",
-            "recommendation": "Add rel='noopener noreferrer' to all internal links that open in new tabs.",
+            # Low, not Medium: this is a security/perf best-practice, NOT an SEO
+            # ranking factor, and modern browsers imply `noopener` for
+            # target="_blank" automatically (since ~2021), so it rarely matters.
+            "severity": "Low", "impact_score": 2, "effort": "Low",
+            "recommendation": "Add rel='noopener noreferrer' to links that open in new tabs. Note: modern browsers already imply noopener for target=\"_blank\", so this is a minor hardening, not an SEO issue.",
         })
     if weak_a > 0:
         issues.append({
@@ -827,19 +905,21 @@ def _summarize_external(links):
         issues.append({
             "issue": f"Broken External Links ({broken})", "category": "External Links",
             "severity": "High", "impact_score": 8, "effort": "Low",
-            "recommendation": "Replace or remove all broken external links — they harm user experience and trust signals.",
+            "recommendation": "Replace or remove all broken external links: they harm user experience and trust signals.",
         })
     if miss_noop > 0:
         issues.append({
             "issue": f"External Links Missing rel='noopener' ({miss_noop})", "category": "External Links",
-            "severity": "Medium", "impact_score": 5, "effort": "Low",
-            "recommendation": "Add rel='noopener noreferrer' to all external links that open in new tabs (security best practice).",
+            # Low, not Medium: security/perf best-practice, not an SEO ranking
+            # factor; modern browsers imply noopener for target="_blank" since ~2021.
+            "severity": "Low", "impact_score": 2, "effort": "Low",
+            "recommendation": "Add rel='noopener noreferrer' to external links that open in new tabs. Note: modern browsers already imply noopener for target=\"_blank\", so this is minor hardening, not an SEO issue.",
         })
     if dofollow > 50:
         issues.append({
             "issue": f"Very High Dofollow External Link Count ({dofollow})", "category": "External Links",
             "severity": "Warning", "impact_score": 4, "effort": "Medium",
-            "recommendation": "Review excessive external dofollow links — add rel='nofollow' for commercial or low-authority destinations.",
+            "recommendation": "Review excessive external dofollow links: add rel='nofollow' for commercial or low-authority destinations.",
         })
     if weak_a > 0:
         issues.append({

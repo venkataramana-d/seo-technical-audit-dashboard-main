@@ -12,9 +12,16 @@ export interface HeadingIssueExplanation {
   htmlExample?: string;
 }
 
+// Covers the full severity vocabulary modules/*.py actually emits (Critical/
+// High/Medium/Warning/Low, see lib/reportExport.ts's export-column mapping).
+// Previously missing "Critical"/"Warning" entirely (falling through to the
+// "info" default below) and mapped "High" to the "critical" status instead
+// of the distinct "high" tier StatusColor already defines.
 const SEVERITY_STATUS: Record<string, StatusColor> = {
-  High: "critical",
+  Critical: "critical",
+  High: "high",
   Medium: "warning",
+  Warning: "warning",
   Low: "info",
 };
 
@@ -42,7 +49,7 @@ export function explainHeadingIssue(issue: Issue): HeadingIssueExplanation {
     return {
       issueName: "Multiple H1 Headings",
       status: "warning",
-      whatIsIt: `${text} — the page has more than one <h1>.`,
+      whatIsIt: `${text}: the page has more than one <h1>.`,
       whyImportant: "A page should have a single, unambiguous main topic. Multiple H1s dilute that signal and confuse the document outline.",
       seoImpact: "Search engines may struggle to determine the single primary topic, diluting topical relevance signals.",
       userImpact: "Screen reader users navigating by heading can lose track of which heading is the actual page title.",
@@ -55,7 +62,7 @@ export function explainHeadingIssue(issue: Issue): HeadingIssueExplanation {
       status: "warning",
       whatIsIt: `${text}.`,
       whyImportant: "An overly long H1 buries the core topic in extra words, making it harder to scan and less impactful as a topical signal.",
-      seoImpact: "Dilutes the keyword relevance signal the H1 provides — a long, unfocused H1 reads as less specific.",
+      seoImpact: "Dilutes the keyword relevance signal the H1 provides; a long, unfocused H1 reads as less specific.",
       userImpact: "Harder to scan at a glance; on mobile a very long H1 can dominate the viewport before any actual content.",
       recommendedFix: "Tighten the H1 to a concise phrase (roughly 20–70 characters) that states the page's core topic.",
     };
@@ -75,10 +82,10 @@ export function explainHeadingIssue(issue: Issue): HeadingIssueExplanation {
     return {
       issueName: "Skipped Heading Level",
       status: "warning",
-      whatIsIt: `${text} — the document jumps levels instead of stepping down one at a time.`,
+      whatIsIt: `${text}: the document jumps levels instead of stepping down one at a time.`,
       whyImportant: "Heading levels form a document outline. Skipping levels (e.g. H2 straight to H4) breaks that outline's logical structure.",
       seoImpact: "Search engines rely on heading hierarchy to understand content structure; a broken outline weakens that structural signal.",
-      userImpact: "Screen reader users navigate pages by heading level — a skipped level makes the page feel like content is missing between sections.",
+      userImpact: "Screen reader users navigate pages by heading level; a skipped level makes the page feel like content is missing between sections.",
       recommendedFix: "Use sequential heading levels (H2 → H3 → H4) without skipping, reflecting the true nesting of sections.",
     };
   }
@@ -86,7 +93,7 @@ export function explainHeadingIssue(issue: Issue): HeadingIssueExplanation {
     return {
       issueName: "Empty Heading",
       status: "warning",
-      whatIsIt: `${text} — a heading tag exists with no text content.`,
+      whatIsIt: `${text}: a heading tag exists with no text content.`,
       whyImportant: "An empty heading contributes nothing but still occupies a slot in the document outline, confusing both crawlers and assistive tech.",
       seoImpact: "No relevance signal from an empty heading, and it can make the surrounding structure look broken to crawlers.",
       userImpact: "Screen reader users hear an announced heading with no content, which is disorienting.",

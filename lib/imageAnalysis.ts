@@ -48,7 +48,7 @@ export function formatBreakdown(images: ImageEntry[]): FormatStat[] {
 }
 
 export function formatBytes(bytes: number | null): string {
-  if (bytes == null) return "—";
+  if (bytes == null) return "N/A";
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
@@ -75,7 +75,7 @@ export interface ImageIssueExplanation {
 }
 
 // Deterministic (rule-based) per-issue explanation, one entry per string in
-// image.issues — mirrors the shape of lib/linkAnalysis.ts's explainLink.
+// image.issues: mirrors the shape of lib/linkAnalysis.ts's explainLink.
 export function explainImageIssue(issue: string, img: ImageEntry): ImageIssueExplanation | null {
   const name = img.name || "this image";
   switch (issue) {
@@ -85,7 +85,7 @@ export function explainImageIssue(issue: string, img: ImageEntry): ImageIssueExp
         status: "critical",
         severity: "High",
         whatIsIt: `"${name}" has no alt attribute at all.`,
-        whyImportant: "Alt text is how search engines and screen readers understand what an image shows — without it, the image contributes nothing to SEO and is invisible to visually impaired visitors.",
+        whyImportant: "Alt text is how search engines and screen readers understand what an image shows; without it, the image contributes nothing to SEO and is invisible to visually impaired visitors.",
         seoImpact: "The image can't rank in Google Image Search and provides no contextual relevance signal for the page.",
         userImpact: "Screen reader users hear nothing when they reach this image; if it fails to load, sighted users see a blank box instead of a description.",
         recommendedFix: "Add a concise, descriptive alt attribute describing what the image shows and its purpose on the page.",
@@ -96,10 +96,10 @@ export function explainImageIssue(issue: string, img: ImageEntry): ImageIssueExp
         issueName: "Empty Alt Text",
         status: "warning",
         severity: "Medium",
-        whatIsIt: `"${name}" has alt="" — valid only if the image is purely decorative.`,
+        whatIsIt: `"${name}" has alt="" (valid only if the image is purely decorative).`,
         whyImportant: "An empty alt is the correct choice for decorative images, but if this image conveys real content, it's being skipped entirely by screen readers and search engines.",
         seoImpact: "No SEO value from this image; correct if decorative, a missed opportunity if not.",
-        userImpact: "Screen readers skip the image silently — fine for decoration, a gap if it's meaningful.",
+        userImpact: "Screen readers skip the image silently: fine for decoration, a gap if it's meaningful.",
         recommendedFix: "If decorative, leave as-is. If it conveys information, add descriptive alt text.",
         htmlExample: `<img src="${img.url}" alt="Descriptive text (or leave empty only if purely decorative)">`,
       };
@@ -124,7 +124,7 @@ export function explainImageIssue(issue: string, img: ImageEntry): ImageIssueExp
         whyImportant: "Search engines treat over-optimized alt text as a manipulation signal, which can hurt rather than help rankings.",
         seoImpact: "Risk of being flagged as a spam/manipulation signal by search engines.",
         userImpact: "Screen reader users hear an unnaturally long or repetitive description.",
-        recommendedFix: "Shorten to a natural, accurate description — a sentence, not a keyword list.",
+        recommendedFix: "Shorten to a natural, accurate description: a sentence, not a keyword list.",
       };
     case "Missing lazy loading":
       return {
@@ -135,7 +135,7 @@ export function explainImageIssue(issue: string, img: ImageEntry): ImageIssueExp
         whyImportant: "Below-the-fold images without lazy loading are downloaded immediately, competing for bandwidth with content the visitor actually sees first.",
         seoImpact: "Slower page load can affect Core Web Vitals (particularly on image-heavy pages), which is a ranking factor.",
         userImpact: "Slightly slower initial page load, especially on mobile connections.",
-        recommendedFix: "Add loading=\"lazy\" to images below the fold. Do not lazy-load the LCP (largest visible) image — it should load immediately.",
+        recommendedFix: "Add loading=\"lazy\" to images below the fold. Do not lazy-load the LCP (largest visible) image; it should load immediately.",
         htmlExample: `<img src="${img.url}" loading="lazy" alt="...">`,
       };
     case "Missing width/height dimensions":
@@ -145,7 +145,7 @@ export function explainImageIssue(issue: string, img: ImageEntry): ImageIssueExp
         severity: "Medium",
         whatIsIt: `"${name}" has no explicit width/height attributes.`,
         whyImportant: "Without dimensions, the browser doesn't know how much space to reserve before the image loads, causing the page layout to jump (Cumulative Layout Shift).",
-        seoImpact: "CLS is a Core Web Vital and a direct ranking factor — missing dimensions are one of the most common causes of poor CLS scores.",
+        seoImpact: "CLS is a Core Web Vital and a direct ranking factor: missing dimensions are one of the most common causes of poor CLS scores.",
         userImpact: "Content visibly jumps around as images pop in, which is disorienting and can cause mis-clicks.",
         recommendedFix: "Add explicit width and height attributes matching the image's intrinsic aspect ratio.",
         htmlExample: `<img src="${img.url}" width="800" height="600" alt="...">`,
@@ -158,7 +158,7 @@ export function explainImageIssue(issue: string, img: ImageEntry): ImageIssueExp
         whatIsIt: `"${name}" uses a generic/auto-generated name (e.g. IMG_1234.jpg) instead of a descriptive one.`,
         whyImportant: "Descriptive filenames are a minor, low-cost image SEO signal Google has confirmed it uses.",
         seoImpact: "Small missed opportunity for an additional relevance signal in Google Image Search.",
-        userImpact: "None directly — this only affects search engine understanding.",
+        userImpact: "None directly; this only affects search engine understanding.",
         recommendedFix: "Rename to a descriptive, hyphen-separated filename (e.g. red-leather-office-chair.jpg) before uploading.",
       };
     case "Could be converted to WebP/AVIF":
@@ -166,9 +166,9 @@ export function explainImageIssue(issue: string, img: ImageEntry): ImageIssueExp
         issueName: "Legacy Image Format",
         status: "info",
         severity: "Low",
-        whatIsIt: `"${name}" is a ${img.format_label} — WebP or AVIF would produce a smaller file at the same visual quality.`,
+        whatIsIt: `"${name}" is a ${img.format_label}. WebP or AVIF would produce a smaller file at the same visual quality.`,
         whyImportant: "Modern formats typically cut file size 25–50% versus JPEG/PNG with no visible quality loss.",
-        seoImpact: "Smaller images load faster, improving LCP — a Core Web Vital and ranking factor.",
+        seoImpact: "Smaller images load faster, improving LCP (a Core Web Vital and ranking factor).",
         userImpact: "Faster page loads, less mobile data used.",
         recommendedFix: "Re-export as WebP or AVIF, or serve via a <picture> element with a WebP/AVIF source and a JPEG/PNG fallback.",
         htmlExample: `<picture>\n  <source srcset="${img.name.replace(/\.[^.]+$/, ".webp")}" type="image/webp">\n  <img src="${img.url}" alt="...">\n</picture>`,
@@ -178,7 +178,7 @@ export function explainImageIssue(issue: string, img: ImageEntry): ImageIssueExp
         issueName: "Broken Image",
         status: "critical",
         severity: "Critical",
-        whatIsIt: `"${name}" doesn't load${img.fetch_error ? ` — ${img.fetch_error}` : img.status_code ? ` — server responded ${img.status_code}` : ""}.`,
+        whatIsIt: `"${name}" doesn't load${img.fetch_error ? `: ${img.fetch_error}` : img.status_code ? `: server responded ${img.status_code}` : ""}.`,
         whyImportant: "A broken image shows as a blank box or broken-icon placeholder to every visitor, and search engine crawlers waste crawl budget requesting a resource that fails.",
         seoImpact: "Broken images can't appear in Google Image Search, hurt perceived page quality, and repeated 4xx/5xx image requests waste crawl budget on larger sites.",
         userImpact: "Visitors see a blank/broken placeholder instead of the intended image, which looks unpolished and can undermine trust.",
@@ -189,10 +189,10 @@ export function explainImageIssue(issue: string, img: ImageEntry): ImageIssueExp
         issueName: "Large File Size",
         status: "high",
         severity: "High",
-        whatIsIt: `"${name}" is ${formatBytes(img.file_size_bytes)} — above the 200KB guideline for web images.`,
+        whatIsIt: `"${name}" is ${formatBytes(img.file_size_bytes)}, above the 200KB guideline for web images.`,
         whyImportant: "Large images are consistently the biggest cause of slow page loads on content-heavy pages.",
         seoImpact: "Directly slows LCP and overall page weight, both of which affect Core Web Vitals and rankings.",
-        userImpact: "Slower load, especially painful on mobile/slow connections — visitors may leave before the page finishes loading.",
+        userImpact: "Slower load, especially painful on mobile/slow connections; visitors may leave before the page finishes loading.",
         recommendedFix: "Compress the image, resize to the actual display dimensions, and use a modern format (WebP/AVIF).",
       };
     default:

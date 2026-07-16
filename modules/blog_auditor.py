@@ -55,7 +55,7 @@ def audit_blog_page(soup, url):
                 "recommendation": f"Add '{element_name}' to improve content quality and E-E-A-T signals.",
             })
 
-    # Word count — reuse raw_text from above
+    # Word count: reuse raw_text from above
     words = [w for w in raw_text.split() if len(w) > 1]
     word_count = len(words)
     reading_time = round(word_count / 200, 1)

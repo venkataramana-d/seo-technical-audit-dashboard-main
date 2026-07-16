@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAudit } from "@/lib/state/AuditContext";
 import { Card, MetricCard, PageHeader, EmptyState, IssueRow } from "@/components/ui";
+import { GaugeIcon } from "@/components/icons";
 import { formatDate, scoreColor } from "@/lib/format";
 import {
   allIssuesOf,
@@ -17,6 +18,7 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  Legend,
   Pie,
   PieChart,
   ResponsiveContainer,
@@ -27,6 +29,17 @@ import {
 
 const PIE_COLORS = ["#10B981", "#D97706", "#DC2626"];
 
+// Recharts tooltips ignore Tailwind classes; CSS variables in inline styles
+// still resolve against the current theme, so this stays light/dark aware.
+const CHART_TOOLTIP_STYLE = {
+  backgroundColor: "var(--seo-card-bg)",
+  border: "1px solid var(--seo-border-strong)",
+  borderRadius: "8px",
+  color: "var(--seo-text)",
+  fontSize: "13px",
+};
+const CHART_TOOLTIP_LABEL_STYLE = { color: "var(--seo-heading)", fontWeight: 600 };
+
 export default function DashboardPage() {
   const { results, lastAuditDate, setNavFilter } = useAudit();
   const router = useRouter();
@@ -34,15 +47,15 @@ export default function DashboardPage() {
   if (results.length === 0) {
     return (
       <div>
-        <PageHeader title="📊 Dashboard Overview" />
+        <PageHeader icon={<GaugeIcon size={18} />} title="Dashboard Overview" />
         <EmptyState
           title="No audits yet"
           hint="Run your first audit to see your SEO health dashboard."
         />
         <div className="mt-4">
           <Link
-            href="/new-audit"
-            className="inline-block rounded-lg bg-[var(--seo-accent)] px-4 py-2 text-sm font-semibold text-white"
+            href="/technical-audit"
+            className="inline-block rounded-lg btn-gradient px-4 py-2 text-sm font-semibold text-white"
           >
             Run New Audit
           </Link>
@@ -74,7 +87,8 @@ export default function DashboardPage() {
   return (
     <div>
       <PageHeader
-        title="📊 Dashboard Overview"
+        icon={<GaugeIcon size={18} />}
+        title="Dashboard Overview"
         subtitle={`Last audit: ${formatDate(lastAuditDate)}`}
       />
 
@@ -109,16 +123,22 @@ export default function DashboardPage() {
                   data={distData}
                   dataKey="value"
                   nameKey="name"
+                  cx="50%"
+                  cy="50%"
                   outerRadius={80}
                   fill="#8884d8"
                   isAnimationActive={false}
-                  label
                 >
                   {distData.map((_, i) => (
                     <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                   ))}
                 </Pie>
-                <Tooltip />
+                <Tooltip contentStyle={CHART_TOOLTIP_STYLE} labelStyle={CHART_TOOLTIP_LABEL_STYLE} />
+                <Legend
+                  verticalAlign="bottom"
+                  height={36}
+                  wrapperStyle={{ fontSize: 12, color: "var(--seo-text-light)" }}
+                />
               </PieChart>
             </ResponsiveContainer>
           ) : null}
@@ -131,9 +151,13 @@ export default function DashboardPage() {
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={sevData}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--seo-border)" />
-              <XAxis dataKey="severity" tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
-              <Tooltip />
+              <XAxis dataKey="severity" tick={{ fontSize: 12, fill: "var(--seo-text-light)" }} />
+              <YAxis tick={{ fontSize: 12, fill: "var(--seo-text-light)" }} allowDecimals={false} />
+              <Tooltip
+                contentStyle={CHART_TOOLTIP_STYLE}
+                labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+                cursor={{ fill: "var(--seo-card-hover)" }}
+              />
               <Bar dataKey="count" fill="var(--seo-accent)" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
@@ -142,7 +166,7 @@ export default function DashboardPage() {
 
       <Card className="mt-6">
         <h3 className="mb-2 text-sm font-semibold text-[var(--seo-subheading)]">
-          Quick Wins — Top Issues by Impact
+          Quick Wins: Top Issues by Impact
         </h3>
         <div>
           {topIssues.map((issue, i) => (

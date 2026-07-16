@@ -189,12 +189,12 @@ export function securityGaps(links: LinkEntry[]): LinkEntry[] {
 
 // Was this specific link actually HTTP-checked (validateLinks was on), or is its
 // health/status just the unchecked default? Surfaced in the UI as a certainty label
-// rather than a numeric "confidence score" — a 404 is a 404, not a probability.
+// rather than a numeric "confidence score": a 404 is a 404, not a probability.
 export function linkCertainty(link: LinkEntry): "Verified" | "Not Checked" {
   return link.status_code !== null && link.status_code !== undefined ? "Verified" : "Not Checked";
 }
 
-// Deterministic priority scoring (NOT a machine-learned score) — combines issue
+// Deterministic priority scoring (NOT a machine-learned score): combines issue
 // severity with reach (internal links affect crawl budget/link equity on your own
 // site; homepage-adjacent links are seen by more crawl paths).
 export function priorityScore(link: LinkEntry, kind: "internal" | "external", isHomepage: boolean): number {
@@ -220,7 +220,7 @@ export interface ExecutiveSummary {
   topPriorityFixes: string[];
 }
 
-// Rule-based summary computed from already-gathered stats — not LLM-generated prose.
+// Rule-based summary computed from already-gathered stats, not LLM-generated prose.
 // Labeled as such in the UI; wiring a real LLM for natural-language write-ups would
 // need an API key (see project notes).
 export function buildExecutiveSummary(
@@ -240,7 +240,7 @@ export function buildExecutiveSummary(
   if (orphanCount > 0) quickWins.push(`Add internal links to ${orphanCount} orphan page(s) with zero inbound links.`);
 
   const topPriorityFixes: string[] = [];
-  if (health.broken > 0) topPriorityFixes.push(`Fix ${health.broken} broken link(s) — direct crawl and user-experience impact.`);
+  if (health.broken > 0) topPriorityFixes.push(`Fix ${health.broken} broken link(s): direct crawl and user-experience impact.`);
   if (health.redirect > 0) topPriorityFixes.push(`Update ${health.redirect} redirecting link(s) to point straight to the final URL.`);
 
   return {
@@ -294,18 +294,18 @@ export interface LinkExplanation {
 function rootCauseFor(link: LinkEntry): string {
   const label = link.status_label as string | undefined;
   const code = link.status_code;
-  if (label?.includes("Timeout")) return "The destination server did not respond in time — likely slow, overloaded, or unreachable.";
+  if (label?.includes("Timeout")) return "The destination server did not respond in time, likely slow, overloaded, or unreachable.";
   if (label?.includes("SSL")) return "The destination has an invalid, expired, or misconfigured SSL certificate.";
-  if (label?.includes("Connection Error")) return "Could not connect to the destination — likely DNS failure or the domain/server is down.";
+  if (label?.includes("Connection Error")) return "Could not connect to the destination, likely DNS failure or the domain/server is down.";
   if (code === 404 || code === 410) return "The page was deleted, moved without a redirect, or the URL was typed/generated incorrectly.";
-  if (code === 403 || code === 401) return "The destination is blocking access — often a site that rejects automated/bot requests, or a page requiring login.";
-  if (code === 429) return "The destination is rate-limiting requests — too many checks were made in a short window.";
+  if (code === 403 || code === 401) return "The destination is blocking access, often a site that rejects automated/bot requests, or a page requiring login.";
+  if (code === 429) return "The destination is rate-limiting requests: too many checks were made in a short window.";
   if (code && code >= 500) return "The destination server encountered an internal error while handling the request.";
   if (code && code >= 300 && code < 400) return "The link points to a URL that has since moved to a different location.";
-  return "Unknown — the link could not be reached or classified.";
+  return "Unknown: the link could not be reached or classified.";
 }
 
-// Deterministic (rule-based) per-link explanation — mirrors the shape asked for by
+// Deterministic (rule-based) per-link explanation, mirrors the shape asked for by
 // a "why is this an issue / how to fix it" audit report, without an LLM call.
 export function explainLink(link: LinkEntry, kind: "internal" | "external"): LinkExplanation {
   if (link.is_broken) {
@@ -351,7 +351,7 @@ export function explainLink(link: LinkEntry, kind: "internal" | "external"): Lin
       severity: "Medium",
       whatIsIt: 'This link opens in a new tab (target="_blank") without rel="noopener noreferrer".',
       whyImportant:
-        "Without noopener, the new tab keeps a JavaScript reference (window.opener) back to your page — a known security risk (reverse tabnabbing) and a minor performance cost.",
+        "Without noopener, the new tab keeps a JavaScript reference (window.opener) back to your page: a known security risk (reverse tabnabbing) and a minor performance cost.",
       rootCause: "The target=\"_blank\" attribute was added without the accompanying rel attributes.",
       seoImpact: "No direct ranking impact, but security best-practice audits (including some SEO tools) flag it.",
       userImpact: "Invisible to most users, but exposes them to a low-probability phishing/tabnabbing vector on untrusted destinations.",
@@ -380,8 +380,8 @@ export function explainLink(link: LinkEntry, kind: "internal" | "external"): Lin
     whatIsIt: "This link resolved successfully and has no detected behavior or attribute issues.",
     whyImportant: "Healthy links maintain crawlability and a good user experience.",
     rootCause: "N/A",
-    seoImpact: "None — link is functioning as expected.",
-    userImpact: "None — link works as expected.",
+    seoImpact: "None. Link is functioning as expected.",
+    userImpact: "None. Link works as expected.",
     recommendedFix: "No action needed.",
   };
 }
@@ -392,7 +392,7 @@ export interface DuplicateAnchorGroup {
 }
 
 // "Duplicate anchor" in the sense professional audit tools flag: the SAME anchor
-// text used to link to DIFFERENT destinations — a real ambiguity issue, distinct
+// text used to link to DIFFERENT destinations: a real ambiguity issue, distinct
 // from just "this anchor text appears more than once" (which is normal, e.g. nav
 // links repeated across pages).
 export function duplicateAnchors(links: LinkEntry[]): DuplicateAnchorGroup[] {

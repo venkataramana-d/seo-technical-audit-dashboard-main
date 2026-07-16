@@ -7,9 +7,29 @@ export interface Issue {
   effort: string;
 }
 
+export type ChecklistStatus = "pass" | "warning" | "fail" | "info";
+
+export interface ChecklistItem {
+  id: string;
+  label: string;
+  group: "crawlability" | "on_page" | "site_health";
+  status: ChecklistStatus;
+  detail: string;
+}
+
+export interface TechnicalAuditChecklist {
+  groups: {
+    crawlability: ChecklistItem[];
+    on_page: ChecklistItem[];
+    site_health: ChecklistItem[];
+  };
+  checks: ChecklistItem[];
+  summary: { total: number; pass: number; warning: number; fail: number; info: number };
+}
+
 // The Python /api/audit endpoint returns the full audit_url() result almost
 // verbatim (see modules/auditor.py). Nested category dicts are intentionally
-// left loosely typed here — they're rendered read-only in the UI and their
+// left loosely typed here: they're rendered read-only in the UI and their
 // exact shape is defined in the Python modules, not duplicated here.
 export interface AuditResult {
   url: string;
@@ -31,6 +51,7 @@ export interface AuditResult {
   images: Record<string, any>;
   image_detail: Record<string, any>;
   advanced: Record<string, any>;
+  site_health: Record<string, any>;
   redirect_analysis: Record<string, any>;
   internal_links: Record<string, any>;
   external_links: Record<string, any>;
@@ -46,6 +67,7 @@ export interface AuditResult {
   seo_score: number;
   score_breakdown: Record<string, number>;
   all_issues: Issue[];
+  technical_audit_checklist?: TechnicalAuditChecklist;
 }
 
 export interface AuditOptions {
