@@ -149,6 +149,13 @@ class Page(Base):
     raw_html_ref: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     rendered_html_ref: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     seo_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Phase 2 additions — all already computed per-page by modules/auditor.py
+    # and modules/advanced_checks.py; these columns are what finally persist
+    # them so worker/site_audit.py can aggregate across a whole crawl.
+    canonical_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    is_indexable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    hreflang_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    schema_types_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     crawl: Mapped["Crawl"] = relationship(back_populates="pages")

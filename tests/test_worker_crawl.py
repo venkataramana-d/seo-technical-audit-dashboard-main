@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from worker import crawl_service, tasks
+from worker import crawl_service, site_audit, tasks
 from worker.db.models import Base, Crawl, Issue, Link, Page
 
 
@@ -75,6 +75,12 @@ def isolated_db(monkeypatch):
     session_factory = _isolated_session_factory()
     monkeypatch.setattr(crawl_service, "SessionLocal", session_factory)
     monkeypatch.setattr(tasks, "SessionLocal", session_factory)
+    monkeypatch.setattr(site_audit, "SessionLocal", session_factory)
+    # finalize_crawl -> run_site_audit calls this for orphan/sitemap-diff
+    # detection; stub it here so these persistence-focused tests don't make a
+    # real network call. tests/test_worker_site_audit.py exercises the real
+    # sitemap-diff behavior with its own controlled stub.
+    monkeypatch.setattr(site_audit, "discover_sitemap_urls", lambda root_url: [])
     return session_factory
 
 

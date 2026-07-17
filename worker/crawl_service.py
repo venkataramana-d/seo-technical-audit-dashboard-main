@@ -1,8 +1,9 @@
 """Bridges the Phase 0 DB schema and the existing `modules.crawler.crawl_site`
 BFS engine: creating a crawl, adapting DB rows to the dataclass config
 `crawl_site` actually takes, persisting each page/link/issue as the crawl
-runs (via `crawl_site`'s `on_result` hook), and finalizing the two summary
-scores once it completes.
+runs (via `crawl_site`'s `on_result` hook), and finalizing — running the
+Phase 2 site-wide aggregation pass (`worker/site_audit.py`) then computing
+the two summary scores — once it completes.
 
 `create_crawl`/`get_or_create_default_project` are today's entry point for
 starting a crawl (manual/test use) — a real `POST /projects/:id/crawls` API
@@ -11,6 +12,7 @@ route is a later phase, not part of Phase 1.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -18,6 +20,7 @@ from sqlalchemy import select
 from modules.crawler import CrawlConfig as ModuleCrawlConfig
 from worker.db.models import Crawl, CrawlConfig, Issue, Link, Organization, Page, Project
 from worker.db.session import SessionLocal
+from worker.site_audit import run_site_audit
 
 # Existing audit modules emit a 5-tier severity scale (Critical/High/Warning/
 # Medium/Low — confirmed by grep across heading_auditor.py/image_auditor.py/
@@ -170,17 +173,29 @@ def persist_result(crawl_id: int, url: str, outcome: dict) -> None:
             metadata = audit.get("metadata") or {}
             headings = audit.get("headings") or {}
             h1_texts = headings.get("h1_texts") or []
+            canonical = audit.get("canonical") or {}
+            indexability = audit.get("indexability") or {}
+            advanced = audit.get("advanced") or {}
+            content = audit.get("content") or {}
+
+            content_text = content.get("text")
+            content_hash = hashlib.md5(content_text.encode("utf-8")).hexdigest() if content_text else None
 
             page = Page(
                 crawl_id=crawl_id,
                 url=page_data["url"],
                 normalized_url=page_data["url"],
                 status_code=page_data.get("status_code"),
-                redirect_chain_json=[],
+                redirect_chain_json=audit.get("redirect_chain") or [],
+                content_hash=content_hash,
                 title=metadata.get("title"),
                 meta_description=metadata.get("description"),
                 h1=h1_texts[0] if h1_texts else None,
                 seo_score=audit.get("seo_score"),
+                canonical_url=canonical.get("canonical_url"),
+                is_indexable=indexability.get("is_indexable"),
+                hreflang_json=advanced.get("hreflang_tags") or [],
+                schema_types_json=advanced.get("schema_types") or [],
             )
             db.add(page)
             db.flush()  # need page.id for the Link/Issue rows below
@@ -215,11 +230,23 @@ def persist_result(crawl_id: int, url: str, outcome: dict) -> None:
 
 
 def finalize_crawl(crawl_id: int, status: str) -> None:
-    """Computes the two summary scores (02-AUDIT-ENGINE.md §4) and closes out
-    the Crawl row. Health Score's denominator is pages that actually got
-    audited (have a seo_score) — robots-skips/fetch-errors have no issue data
-    to evaluate and are excluded, matching Ahrefs' "% of crawled pages"
-    framing rather than "% of discovered URLs"."""
+    """Runs the Phase 2 post-crawl aggregation pass (only on success — a
+    failed crawl's partial data isn't a meaningful basis for sitewide
+    duplicate/orphan/redirect findings), then computes the two summary
+    scores (02-AUDIT-ENGINE.md §4) and closes out the Crawl row.
+
+    run_site_audit() runs first, in its own committed session, so the
+    sitewide "error"-severity issues it produces (broken internal links,
+    redirect loops) are already in the Issue table by the time health_score
+    is computed below — a page with a broken outbound link should count
+    against that page's "clean" status just like a per-page audit error
+    would. Health Score's denominator is pages that actually got audited
+    (have a seo_score) — robots-skips/fetch-errors have no issue data to
+    evaluate and are excluded, matching Ahrefs' "% of crawled pages" framing
+    rather than "% of discovered URLs"."""
+    if status == "completed":
+        run_site_audit(crawl_id)
+
     with SessionLocal() as db:
         crawl = db.get(Crawl, crawl_id)
         if crawl is None:

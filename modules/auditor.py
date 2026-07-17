@@ -504,6 +504,11 @@ def analyze_content(soup, html: str = "", base_url: str = ""):
     return {
         "word_count": word_count, "reading_time": reading_time,
         "content_ratio": content_ratio, "is_thin": word_count < THIN_THRESHOLD,
+        # Normalized visible-text extraction (script/style/nav/footer/header/
+        # aside already stripped above) — exposed so a caller can hash it for
+        # sitewide exact-duplicate-content detection (worker/site_audit.py)
+        # without re-parsing the page.
+        "text": text.strip(),
         "intro_paragraphs": intro_paras,
         "conclusion_paragraphs": conclusion_paras,
         "intro_paragraphs_html": intro_html,
