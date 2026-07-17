@@ -49,3 +49,6 @@ audit_cache/
 backup/
 *.zip
 
+# Local dev DB (worker/queue.py + worker/db/ — see worker/README.md)
+worker/dev.db
+

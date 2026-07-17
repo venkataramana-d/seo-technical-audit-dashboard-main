@@ -9,3 +9,7 @@ textstat>=0.7
 python-whois>=0.9
 dnspython>=2.6
 httpx[http2]>=0.27
+
+# Phase 0 platform foundations (worker/, alembic/) — see worker/README.md
+sqlalchemy>=2.0
+alembic>=1.13
