@@ -69,11 +69,25 @@
   --seo-banner-text: #F5F3FF;
   --seo-banner-muted: #C4B5FD;
 
+  /* Soft accent wash for hero surfaces (New Audit hero, AI summary card). */
+  --seo-gradient-soft: linear-gradient(135deg, rgba(99, 102, 241, 0.10), rgba(139, 92, 246, 0.10));
+
+  /* Sidebar shell — a dark rail regardless of app theme, so the workspace
+     chrome reads as a distinct surface from the content it frames. */
+  --seo-sidebar-bg: #0B0B12;
+  --seo-sidebar-text: #9CA0B4;
+  --seo-sidebar-text-active: #FFFFFF;
+  --seo-sidebar-hover: rgba(255, 255, 255, 0.06);
+  --seo-sidebar-label: #55586B;
+  --seo-sidebar-border: rgba(255, 255, 255, 0.07);
+  --seo-sidebar-active-bg: rgba(99, 102, 241, 0.16);
+  --seo-sidebar-track: rgba(255, 255, 255, 0.09);
+
   /* Tighter radius scale — an "app" reads tighter than a marketing site. */
-  --seo-radius: 10px;
-  --seo-radius-lg: 14px;
-  --seo-radius-sm: 8px;
-  --seo-radius-pill: 6px;
+  --seo-radius: 11px;
+  --seo-radius-lg: 16px;
+  --seo-radius-sm: 9px;
+  --seo-radius-pill: 7px;
 
   --seo-score-track: #E9EBF0;
 
@@ -106,6 +120,11 @@
   --table-row-hover: rgba(99, 102, 241, 0.08);
 
   --seo-score-track: #26263A;
+
+  --seo-gradient-soft: linear-gradient(135deg, rgba(99, 102, 241, 0.16), rgba(139, 92, 246, 0.14));
+  /* In dark mode the rail goes a touch deeper than the app bg so it still
+     separates from the content column. */
+  --seo-sidebar-bg: #050509;
 }
 
 @theme inline {
@@ -269,4 +288,30 @@ h1, h2, h3, .track-tight {
   font-weight: 700;
   color: var(--seo-heading);
   font-size: calc(var(--score-size) * 0.28);
+}
+
+/* Soft accent wash — hero surfaces that should feel branded without shouting. */
+.gradient-soft {
+  background: var(--seo-gradient-soft);
+}
+
+/* Staggered entrance for cards/rows on first paint. Pair with an inline
+   animation-delay for a cascade. Disabled under reduced-motion. */
+.reveal {
+  opacity: 0;
+  transform: translateY(10px);
+  animation: seo-rise 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+}
+@keyframes seo-rise {
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
 }
