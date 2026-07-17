@@ -4,8 +4,6 @@ wrappers around the existing modules/*.py functions, not a reimplementation.
 access; the point being verified is that the handler passes payload through
 and returns the result unchanged, byte-for-byte."""
 
-import pytest
-
 from worker import tasks
 
 
@@ -30,8 +28,3 @@ def test_handle_audit_page_passes_payload_through_unchanged(monkeypatch):
 
     assert captured == payload
     assert result is fake_result
-
-
-def test_handle_crawl_start_is_not_implemented_yet():
-    with pytest.raises(NotImplementedError, match="Phase 1"):
-        tasks.handle_crawl_start({})

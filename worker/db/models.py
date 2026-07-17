@@ -115,6 +115,11 @@ class Crawl(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    # Which CrawlConfig snapshot this run used — a project can accumulate
+    # multiple crawl_configs over time (settings changed between runs), so
+    # this pins a Crawl to the exact config it was launched with rather than
+    # requiring an ambiguous "latest config for this project" lookup.
+    crawl_config_id: Mapped[int | None] = mapped_column(ForeignKey("crawl_configs.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="queued")  # queued|running|paused|completed|failed
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

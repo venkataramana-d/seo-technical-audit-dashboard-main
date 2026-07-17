@@ -107,6 +107,52 @@ def test_crawl_discovers_linked_pages_within_domain(mock_fetch, mock_robots_get,
 @patch("modules.crawler.audit_url", side_effect=_stub_audit_url)
 @patch("modules.crawler.requests.get", side_effect=_allow_all_robots_get)
 @patch("modules.crawler.fetch_page")
+def test_on_result_callback_fires_for_every_processed_url(mock_fetch, mock_robots_get, mock_audit):
+    pages = {
+        "https://example.com/": _soup_with_links("/about"),
+        "https://example.com/about": _soup_with_links(),
+    }
+    mock_fetch.side_effect = lambda url: _fetch_result(url, pages[url])
+
+    seen = {}
+
+    def on_result(url, outcome):
+        seen[url] = outcome
+
+    config = CrawlConfig(seed_url="https://example.com/", max_pages=10, max_depth=2)
+    result = crawl_site(config, on_result=on_result)
+
+    assert set(seen.keys()) == {p["url"] for p in result["pages"]}
+    for url, outcome in seen.items():
+        assert outcome["page"]["url"] == url
+        assert "links" in outcome
+
+
+@patch("modules.crawler.audit_url", side_effect=_stub_audit_url)
+@patch("modules.crawler.fetch_page")
+def test_on_result_callback_fires_for_robots_skip(mock_fetch, mock_audit):
+    disallow_resp = MagicMock()
+    disallow_resp.status_code = 200
+    disallow_resp.text = "User-agent: *\nDisallow: /private\n"
+    disallow_resp.is_redirect = False
+    disallow_resp.headers = {}
+
+    seen = {}
+
+    def on_result(url, outcome):
+        seen[url] = outcome
+
+    with patch("modules.crawler.requests.get", return_value=disallow_resp):
+        mock_fetch.side_effect = lambda url: _fetch_result(url, _soup_with_links())
+        config = CrawlConfig(seed_url="https://example.com/private", robots_mode="respect")
+        crawl_site(config, on_result=on_result)
+
+    assert seen["https://example.com/private"]["skipped"] == "robots"
+
+
+@patch("modules.crawler.audit_url", side_effect=_stub_audit_url)
+@patch("modules.crawler.requests.get", side_effect=_allow_all_robots_get)
+@patch("modules.crawler.fetch_page")
 def test_crawl_respects_max_pages(mock_fetch, mock_robots_get, mock_audit):
     pages = {
         "https://example.com": _soup_with_links("/a", "/b", "/c"),

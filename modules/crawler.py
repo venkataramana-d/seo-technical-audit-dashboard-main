@@ -212,11 +212,15 @@ def _robots_allowed(url: str, user_agent: str, cache: dict, lock: threading.Lock
     return rp.can_fetch(ua_token, url), rp.crawl_delay(ua_token)
 
 
-def crawl_site(config: CrawlConfig, progress_callback=None) -> dict:
+def crawl_site(config: CrawlConfig, progress_callback=None, on_result=None) -> dict:
     """Breadth-first crawl of `config.seed_url`'s domain: discover pages depth by
     depth, run the existing single-page audit engine on each accepted page, and
     return the aggregate result. `progress_callback(pages_done, max_pages)` is
-    invoked after each page finishes, if provided."""
+    invoked after each page finishes, if provided. `on_result(url, outcome)` is
+    invoked once per processed URL (success, robots-skip, or fetch-error alike)
+    with the same `outcome` dict `_process()` produced — the hook a caller uses
+    to persist each page as it's crawled instead of waiting for the final
+    in-memory return value (see worker/crawl_service.py)."""
     started = datetime.now()
 
     ok, ssrf_msg = validate_audit_url(config.seed_url)
@@ -299,7 +303,10 @@ def crawl_site(config: CrawlConfig, progress_callback=None) -> dict:
                 try:
                     outcome = future.result()
                 except Exception as exc:
+                    outcome = {"error": str(exc), "url": url}
                     errors.append({"url": url, "error": str(exc)})
+                    if on_result:
+                        on_result(url, outcome)
                     continue
 
                 if outcome.get("skipped") == "robots":
@@ -312,6 +319,8 @@ def crawl_site(config: CrawlConfig, progress_callback=None) -> dict:
                         if link not in visited:
                             frontier.append(link)
 
+                if on_result:
+                    on_result(url, outcome)
                 if progress_callback:
                     progress_callback(len(pages), config.max_pages)
 
