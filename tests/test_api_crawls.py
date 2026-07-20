@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -59,28 +60,43 @@ def isolated_db(monkeypatch):
     return session_factory
 
 
-def _seed_crawl(session_factory, *, status="completed", health_score=80.0, seo_score_avg=85.0) -> int:
+def _seed_crawl(session_factory, *, status="completed", health_score=80.0, seo_score_avg=85.0,
+                 project_id=None, finished_at=None) -> int:
+    """Creates a new org/project by default; pass an existing `project_id`
+    (e.g. from a prior _seed_crawl call) to add a second crawl to the same
+    project — needed for the "compare" action's tests, which diff two
+    crawls of one project."""
     with session_factory() as db:
-        org = Organization(name="Test Org")
-        db.add(org)
-        db.flush()
-        project = Project(org_id=org.id, name="example.com", root_url="https://example.com")
-        db.add(project)
-        db.flush()
-        config = CrawlConfig(project_id=project.id, source_type="homepage", robots_mode="respect", max_pages=50)
+        if project_id is None:
+            org = Organization(name="Test Org")
+            db.add(org)
+            db.flush()
+            project = Project(org_id=org.id, name="example.com", root_url="https://example.com")
+            db.add(project)
+            db.flush()
+            project_id = project.id
+        config = CrawlConfig(project_id=project_id, source_type="homepage", robots_mode="respect", max_pages=50)
         db.add(config)
         db.flush()
         crawl = Crawl(
-            project_id=project.id, crawl_config_id=config.id, status=status,
+            project_id=project_id, crawl_config_id=config.id, status=status,
             health_score=health_score, seo_score_avg=seo_score_avg, pages_crawled=3,
+            finished_at=finished_at,
         )
         db.add(crawl)
         db.commit()
         return crawl.id
 
 
+def _project_id_of(session_factory, crawl_id) -> int:
+    with session_factory() as db:
+        return db.get(Crawl, crawl_id).project_id
+
+
 def test_all_actions_registered():
-    assert set(crawls._ACTIONS) == {"list", "create", "status", "thematic", "trend", "pages", "issues"}
+    assert set(crawls._ACTIONS) == {
+        "list", "create", "status", "thematic", "trend", "pages", "issues", "compare",
+    }
 
 
 def test_unknown_action_returns_400():
@@ -332,3 +348,83 @@ def test_issues_pagination_math(isolated_db):
     assert body["total"] == 5
     assert body["page"] == 2
     assert len(body["issues"]) == 2
+
+
+def test_compare_returns_not_available_for_a_project_first_crawl(isolated_db):
+    crawl_id = _seed_crawl(isolated_db, finished_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+
+    h = _mock_handler({"action": "compare", "crawlId": crawl_id})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    assert body["available"] is False
+
+
+def test_compare_auto_selects_the_previous_completed_crawl(isolated_db):
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    old_id = _seed_crawl(isolated_db, health_score=50.0, seo_score_avg=85.0, finished_at=t0)
+    project_id = _project_id_of(isolated_db, old_id)
+    new_id = _seed_crawl(
+        isolated_db, project_id=project_id, health_score=75.0, seo_score_avg=80.0,
+        finished_at=t0 + timedelta(days=7),
+    )
+
+    h = _mock_handler({"action": "compare", "crawlId": new_id})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    assert body["available"] is True
+    assert body["compareToId"] == old_id
+    assert body["diff"]["healthScoreDelta"] == 25.0
+    assert body["diff"]["seoScoreAvgDelta"] == -5.0
+
+
+def test_compare_accepts_an_explicit_compare_to_id(isolated_db):
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    oldest_id = _seed_crawl(isolated_db, health_score=40.0, finished_at=t0)
+    project_id = _project_id_of(isolated_db, oldest_id)
+    _seed_crawl(isolated_db, project_id=project_id, health_score=60.0, finished_at=t0 + timedelta(days=3))
+    newest_id = _seed_crawl(isolated_db, project_id=project_id, health_score=90.0, finished_at=t0 + timedelta(days=7))
+
+    # explicitly diff against the oldest crawl, skipping the auto-selected
+    # (most recent prior) one
+    h = _mock_handler({"action": "compare", "crawlId": newest_id, "compareToId": oldest_id})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    assert body["compareToId"] == oldest_id
+    assert body["diff"]["healthScoreDelta"] == 50.0  # 90 - 40, not 90 - 60
+
+
+def test_compare_includes_new_and_fixed_issues(isolated_db):
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    old_id = _seed_crawl(isolated_db, finished_at=t0)
+    project_id = _project_id_of(isolated_db, old_id)
+    new_id = _seed_crawl(isolated_db, project_id=project_id, finished_at=t0 + timedelta(days=7))
+
+    with isolated_db() as db:
+        old_page = Page(crawl_id=old_id, url="https://example.com/a", normalized_url="https://example.com/a")
+        new_page = Page(crawl_id=new_id, url="https://example.com/a", normalized_url="https://example.com/a")
+        db.add_all([old_page, new_page])
+        db.flush()
+        db.add(Issue(crawl_id=old_id, page_id=old_page.id, issue_type="Fixed issue", severity="warning"))
+        db.add(Issue(crawl_id=new_id, page_id=new_page.id, issue_type="New issue", severity="error"))
+        db.commit()
+
+    h = _mock_handler({"action": "compare", "crawlId": new_id})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    assert {"url": "https://example.com/a", "issue_type": "New issue"} in body["diff"]["newIssues"]
+    assert {"url": "https://example.com/a", "issue_type": "Fixed issue"} in body["diff"]["fixedIssues"]
+
+
+def test_compare_with_invalid_crawl_id_returns_400():
+    h = _mock_handler({"action": "compare"})
+    crawls.handler.do_POST(h)
+    status, _ = _sent_status_and_body(h)
+    assert status == 400

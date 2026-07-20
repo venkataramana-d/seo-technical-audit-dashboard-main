@@ -1,12 +1,11 @@
 """Frontend API for the crawler platform: start a crawl, watch it run, see
-its results, browse its pages and issues. Same one-file/action-dispatch
-convention as api/audit-pipeline.py — POST {"action": ..., ...} rather than
-REST verbs/path params.
+its results, browse its pages/issues, and compare it against a prior crawl.
+Same one-file/action-dispatch convention as api/audit-pipeline.py — POST
+{"action": ..., ...} rather than REST verbs/path params.
 
 Deferred (not this file's job yet): the links tab, site-structure graph,
-the compare/diff UI (worker/crawl_diff.py exists server-side but has no UI
-yet), schedule config. Each is an incremental addition to this same
-dispatch table.
+schedule config. Each is an incremental addition to this same dispatch
+table.
 
 Talks straight to worker/*.py — same DB file the worker process reads/
 writes (worker/db/session.py resolves an absolute path), no separate
@@ -23,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from modules._http import bulk_url_cap, read_json_body, require_str, send_json  # noqa: E402
 from sqlalchemy import func, select  # noqa: E402
-from worker.crawl_diff import get_score_trend  # noqa: E402
+from worker.crawl_diff import compare_crawls, get_previous_completed_crawl, get_score_trend  # noqa: E402
 from worker.crawl_service import create_crawl  # noqa: E402
 from worker.db.models import Crawl, Issue, Page, Project  # noqa: E402
 from worker.db.session import SessionLocal  # noqa: E402
@@ -143,6 +142,51 @@ def _handle_trend(handler, payload):
     except Exception:  # noqa: BLE001
         logger.exception("crawls.py (trend) request failed")
         send_json(handler, 500, {"error": "Internal error while building the score trend."})
+
+
+def _handle_compare(handler, payload):
+    try:
+        crawl_id = _parse_crawl_id(handler, payload)
+        if crawl_id is None:
+            return
+
+        compare_to_id = payload.get("compareToId")
+        try:
+            compare_to_id = int(compare_to_id) if compare_to_id is not None else None
+        except (TypeError, ValueError):
+            send_json(handler, 400, {"error": "compareToId must be an integer"})
+            return
+
+        if compare_to_id is None:
+            previous = get_previous_completed_crawl(crawl_id)
+            if previous is None:
+                # A project's first crawl (or one with no earlier completed
+                # run) has nothing to diff against — a normal state, not an
+                # error.
+                send_json(handler, 200, {"available": False})
+                return
+            compare_to_id = previous.id
+
+        diff = compare_crawls(compare_to_id, crawl_id)
+        send_json(handler, 200, {
+            "available": True,
+            "compareToId": compare_to_id,
+            "diff": {
+                "newIssues": diff["new_issues"],
+                "fixedIssues": diff["fixed_issues"],
+                "regressedPages": diff["regressed_pages"],
+                "improvedPages": diff["improved_pages"],
+                "healthScoreDelta": diff["health_score_delta"],
+                "seoScoreAvgDelta": diff["seo_score_avg_delta"],
+            },
+        })
+    except ValueError as e:
+        # compare_crawls() raises ValueError if either crawl_id doesn't exist
+        # (e.g. a stale compareToId from the client) — a 400, not a 500.
+        send_json(handler, 400, {"error": str(e)})
+    except Exception:  # noqa: BLE001
+        logger.exception("crawls.py (compare) request failed")
+        send_json(handler, 500, {"error": "Internal error while comparing crawls."})
 
 
 def _parse_pagination(payload) -> tuple[int, int]:
@@ -277,6 +321,7 @@ _ACTIONS = {
     "trend": _handle_trend,
     "pages": _handle_pages,
     "issues": _handle_issues,
+    "compare": _handle_compare,
 }
 
 

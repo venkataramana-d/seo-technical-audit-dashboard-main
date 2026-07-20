@@ -2,9 +2,31 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
+import {
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { Card, PageHeader, ScoreCircle, TabBar } from "@/components/ui";
 import { GlobeIcon } from "@/components/icons";
 import { formatDate } from "@/lib/format";
+
+// Same convention as app/page.tsx's charts — Recharts tooltips ignore
+// Tailwind classes, but CSS variables in inline styles still resolve
+// against the current theme.
+const CHART_TOOLTIP_STYLE = {
+  backgroundColor: "var(--seo-card-bg)",
+  border: "1px solid var(--seo-border-strong)",
+  borderRadius: "8px",
+  color: "var(--seo-text)",
+  fontSize: "13px",
+};
+const CHART_TOOLTIP_LABEL_STYLE = { color: "var(--seo-heading)", fontWeight: 600 };
 
 interface CrawlStatus {
   id: number;
@@ -67,9 +89,52 @@ interface IssuesResponse {
   categories: string[];
 }
 
+interface CrawlListItem {
+  id: number;
+  rootUrl: string | null;
+  status: string;
+  healthScore: number | null;
+  seoScoreAvg: number | null;
+  pagesCrawled: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+interface DiffIssue {
+  url: string | null;
+  issue_type: string;
+}
+
+interface DiffPage {
+  url: string;
+  old_score: number;
+  new_score: number;
+  delta: number;
+}
+
+interface CompareResponse {
+  available: boolean;
+  compareToId?: number;
+  diff?: {
+    newIssues: DiffIssue[];
+    fixedIssues: DiffIssue[];
+    regressedPages: DiffPage[];
+    improvedPages: DiffPage[];
+    healthScoreDelta: number | null;
+    seoScoreAvgDelta: number | null;
+  };
+}
+
+interface TrendPoint {
+  crawl_id: number;
+  health_score: number | null;
+  seo_score_avg: number | null;
+  finished_at: string | null;
+}
+
 const POLL_INTERVAL_MS = 3000;
 const FINISHED_STATUSES = new Set(["completed", "failed"]);
-const TABS = ["Overview", "Pages", "Issues"] as const;
+const TABS = ["Overview", "Pages", "Issues", "Compare"] as const;
 type Tab = (typeof TABS)[number];
 
 const SEVERITY_STYLE: Record<string, { color: string; bg: string }> = {
@@ -428,6 +493,184 @@ function IssuesTab({ crawlId }: { crawlId: number }) {
   );
 }
 
+function ScoreDelta({ label, delta }: { label: string; delta: number | null | undefined }) {
+  const color =
+    delta == null || delta === 0 ? "var(--seo-muted)" : delta > 0 ? "var(--seo-success)" : "var(--seo-error)";
+  return (
+    <div>
+      <div className="text-xs text-[var(--seo-muted)]">{label}</div>
+      <div className="text-lg font-semibold tabular-nums" style={{ color }}>
+        {delta == null ? "—" : `${delta > 0 ? "+" : ""}${delta.toFixed(1)}`}
+      </div>
+    </div>
+  );
+}
+
+function DiffIssueList({ title, issues }: { title: string; issues: DiffIssue[] }) {
+  return (
+    <div>
+      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--seo-muted)]">
+        {title} ({issues.length})
+      </h3>
+      {issues.length === 0 ? (
+        <p className="text-xs text-[var(--seo-muted)]">None.</p>
+      ) : (
+        <ul className="flex flex-col gap-1.5">
+          {issues.map((i, idx) => (
+            <li key={idx} className="text-xs">
+              <span className="font-medium text-[var(--seo-heading)]">{i.issue_type}</span>
+              <span className="ml-1.5 font-mono text-[var(--seo-muted)]">{i.url ?? "Sitewide"}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function DiffPageList({ title, pages, color }: { title: string; pages: DiffPage[]; color: string }) {
+  return (
+    <div>
+      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--seo-muted)]">
+        {title} ({pages.length})
+      </h3>
+      {pages.length === 0 ? (
+        <p className="text-xs text-[var(--seo-muted)]">None.</p>
+      ) : (
+        <ul className="flex flex-col gap-1.5">
+          {pages.map((p, idx) => (
+            <li key={idx} className="text-xs">
+              <span className="font-mono text-[var(--seo-text)]">{p.url}</span>
+              <span className="ml-1.5 tabular-nums" style={{ color }}>
+                {Math.round(p.old_score)} → {Math.round(p.new_score)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function CompareTab({ crawlId, rootUrl }: { crawlId: number; rootUrl: string | null }) {
+  const [compareToId, setCompareToId] = useState<number | null>(null);
+  const [compare, setCompare] = useState<CompareResponse | null>(null);
+  const [candidates, setCandidates] = useState<CrawlListItem[]>([]);
+  const [trend, setTrend] = useState<TrendPoint[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    postCrawlsAction<{ crawls: CrawlListItem[] }>({ action: "list" })
+      .then((data) => {
+        setCandidates(
+          data.crawls.filter((c) => c.rootUrl === rootUrl && c.id !== crawlId && c.status === "completed")
+        );
+      })
+      .catch(() => {
+        /* candidate picker is a convenience; the default comparison still works without it */
+      });
+  }, [crawlId, rootUrl]);
+
+  useEffect(() => {
+    postCrawlsAction<{ trend: TrendPoint[] }>({ action: "trend", crawlId })
+      .then((data) => setTrend(data.trend))
+      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load score trend."));
+  }, [crawlId]);
+
+  useEffect(() => {
+    setLoading(true);
+    const body: Record<string, unknown> = { action: "compare", crawlId };
+    if (compareToId != null) body.compareToId = compareToId;
+    postCrawlsAction<CompareResponse>(body)
+      .then((data) => {
+        setCompare(data);
+        if (data.available && data.compareToId != null && compareToId == null) {
+          setCompareToId(data.compareToId);
+        }
+        setError(null);
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load comparison."))
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [crawlId, compareToId]);
+
+  const trendData = (trend || []).map((t) => ({ ...t, label: formatDate(t.finished_at) }));
+
+  return (
+    <div className="flex flex-col gap-4">
+      {error ? <p className="text-xs text-[var(--seo-error)]">{error}</p> : null}
+
+      <Card>
+        <h2 className="mb-3 text-sm font-semibold text-[var(--seo-heading)]">Score trend</h2>
+        {trend === null ? (
+          <p className="text-xs text-[var(--seo-muted)]">Loading…</p>
+        ) : trend.length < 2 ? (
+          <p className="text-xs text-[var(--seo-muted)]">Not enough crawl history yet for a trend line.</p>
+        ) : (
+          <ResponsiveContainer width="100%" height={220}>
+            <LineChart data={trendData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--seo-border)" />
+              <XAxis dataKey="label" tick={{ fontSize: 11, fill: "var(--seo-muted)" }} />
+              <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: "var(--seo-muted)" }} />
+              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} labelStyle={CHART_TOOLTIP_LABEL_STYLE} />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              <Line type="monotone" dataKey="health_score" name="Health Score" stroke="#6366F1" strokeWidth={2} dot={{ r: 3 }} />
+              <Line type="monotone" dataKey="seo_score_avg" name="SEO Score" stroke="#10B981" strokeWidth={2} dot={{ r: 3 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        )}
+      </Card>
+
+      <Card>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold text-[var(--seo-heading)]">Compare against</h2>
+          {candidates.length > 0 ? (
+            <select
+              value={compareToId ?? ""}
+              onChange={(e) => setCompareToId(Number(e.target.value))}
+              className="rounded-lg border border-[var(--seo-border-strong)] bg-[var(--seo-card-bg)] px-2.5 py-1.5 text-sm text-[var(--seo-text)] outline-none focus:border-[var(--seo-accent)]"
+            >
+              {candidates.map((c) => (
+                <option key={c.id} value={c.id}>
+                  Crawl #{c.id} — {formatDate(c.finishedAt)}
+                </option>
+              ))}
+            </select>
+          ) : null}
+        </div>
+
+        {loading && !compare ? <p className="text-xs text-[var(--seo-muted)]">Loading…</p> : null}
+
+        {compare && !compare.available ? (
+          <p className="text-xs text-[var(--seo-muted)]">
+            Nothing to compare yet — run this crawl again to see what changed.
+          </p>
+        ) : null}
+
+        {compare?.available && compare.diff ? (
+          <div className="flex flex-col gap-4">
+            <div className="grid grid-cols-2 gap-4">
+              <ScoreDelta label="Health Score change" delta={compare.diff.healthScoreDelta} />
+              <ScoreDelta label="SEO Score change" delta={compare.diff.seoScoreAvgDelta} />
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <DiffIssueList title="New issues" issues={compare.diff.newIssues} />
+              <DiffIssueList title="Fixed issues" issues={compare.diff.fixedIssues} />
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <DiffPageList title="Regressed pages" pages={compare.diff.regressedPages} color="var(--seo-error)" />
+              <DiffPageList title="Improved pages" pages={compare.diff.improvedPages} color="var(--seo-success)" />
+            </div>
+          </div>
+        ) : null}
+      </Card>
+    </div>
+  );
+}
+
 export default function CrawlDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -545,6 +788,7 @@ export default function CrawlDetailPage() {
           {activeTab === "Overview" ? <OverviewTab status={status} themes={themes} /> : null}
           {activeTab === "Pages" ? <PagesTab crawlId={crawlId} /> : null}
           {activeTab === "Issues" ? <IssuesTab crawlId={crawlId} /> : null}
+          {activeTab === "Compare" ? <CompareTab crawlId={crawlId} rootUrl={status.rootUrl} /> : null}
         </>
       )}
     </div>
