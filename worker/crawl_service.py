@@ -43,6 +43,15 @@ def _map_severity(original: str) -> str:
     return _SEVERITY_MAP.get(original, "notice")
 
 
+def _compute_next_run_at(schedule_cron: str | None) -> datetime | None:
+    """Shared by create_crawl() (first schedule) and
+    set_crawl_config_schedule() (editing an existing one) so there's one
+    place computing "when does this cron expression next fire"."""
+    if not schedule_cron:
+        return None
+    return croniter(schedule_cron, datetime.now(timezone.utc)).get_next(datetime)
+
+
 def get_or_create_default_project(db, root_url: str) -> Project:
     """Phase 0 designed users/organizations/memberships tables but never
     actually seeded any rows (no login flow yet — see worker/README.md). This
@@ -121,8 +130,7 @@ def create_crawl(
         user_agent=user_agent,
         schedule_cron=schedule_cron,
     )
-    if schedule_cron:
-        crawl_config.next_run_at = croniter(schedule_cron, datetime.now(timezone.utc)).get_next(datetime)
+    crawl_config.next_run_at = _compute_next_run_at(schedule_cron)
     db.add(crawl_config)
     db.flush()
 
@@ -136,6 +144,26 @@ def create_crawl(
     db.commit()
     db.refresh(crawl)
     return crawl
+
+
+def set_crawl_config_schedule(db, crawl_config_id: int, schedule_cron: str | None) -> CrawlConfig:
+    """Updates an *existing* CrawlConfig's schedule — unlike create_crawl(),
+    which only sets one at creation time. Recurring runs
+    (worker/scheduler.py::enqueue_due_crawls()) are tied to one persistent
+    CrawlConfig, so editing a schedule updates that same row rather than
+    creating a new one. Passing schedule_cron=None turns the schedule off:
+    both columns go to NULL, and enqueue_due_crawls()'s own
+    `WHERE schedule_cron IS NOT NULL` filter naturally stops picking it up
+    — no separate "disabled" flag needed."""
+    crawl_config = db.get(CrawlConfig, crawl_config_id)
+    if crawl_config is None:
+        raise ValueError(f"no such crawl_config_id={crawl_config_id!r}")
+
+    crawl_config.schedule_cron = schedule_cron
+    crawl_config.next_run_at = _compute_next_run_at(schedule_cron)
+    db.commit()
+    db.refresh(crawl_config)
+    return crawl_config
 
 
 def build_module_crawl_config(project: Project, crawl_config: CrawlConfig) -> ModuleCrawlConfig:

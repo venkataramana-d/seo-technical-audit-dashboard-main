@@ -1,11 +1,11 @@
 """Frontend API for the crawler platform: start a crawl, watch it run, see
-its results, browse its pages/issues, and compare it against a prior crawl.
-Same one-file/action-dispatch convention as api/audit-pipeline.py — POST
-{"action": ..., ...} rather than REST verbs/path params.
+its results, browse its pages/issues, compare it against a prior crawl, and
+schedule it to repeat. Same one-file/action-dispatch convention as
+api/audit-pipeline.py — POST {"action": ..., ...} rather than REST
+verbs/path params.
 
-Deferred (not this file's job yet): the links tab, site-structure graph,
-schedule config. Each is an incremental addition to this same dispatch
-table.
+Deferred (not this file's job yet): the links tab, site-structure graph.
+Each is an incremental addition to this same dispatch table.
 
 Talks straight to worker/*.py — same DB file the worker process reads/
 writes (worker/db/session.py resolves an absolute path), no separate
@@ -23,8 +23,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from modules._http import bulk_url_cap, read_json_body, require_str, send_json  # noqa: E402
 from sqlalchemy import func, select  # noqa: E402
 from worker.crawl_diff import compare_crawls, get_previous_completed_crawl, get_score_trend  # noqa: E402
-from worker.crawl_service import create_crawl  # noqa: E402
-from worker.db.models import Crawl, Issue, Page, Project  # noqa: E402
+from worker.crawl_service import create_crawl, set_crawl_config_schedule  # noqa: E402
+from worker.db.models import Crawl, CrawlConfig, Issue, Page, Project  # noqa: E402
 from worker.db.session import SessionLocal  # noqa: E402
 from worker.queue import enqueue  # noqa: E402
 from worker.site_audit import get_thematic_report  # noqa: E402
@@ -36,7 +36,7 @@ MAX_PAGE_SIZE = 200
 logger = logging.getLogger(__name__)
 
 
-def _crawl_summary(crawl: Crawl, root_url: str | None = None) -> dict:
+def _crawl_summary(crawl: Crawl, root_url: str | None = None, crawl_config: "CrawlConfig | None" = None) -> dict:
     return {
         "id": crawl.id,
         "rootUrl": root_url,
@@ -47,6 +47,8 @@ def _crawl_summary(crawl: Crawl, root_url: str | None = None) -> dict:
         "pagesTotalEstimate": crawl.pages_total_estimate,
         "startedAt": crawl.started_at.isoformat() if crawl.started_at else None,
         "finishedAt": crawl.finished_at.isoformat() if crawl.finished_at else None,
+        "scheduleCron": crawl_config.schedule_cron if crawl_config else None,
+        "nextRunAt": crawl_config.next_run_at.isoformat() if crawl_config and crawl_config.next_run_at else None,
     }
 
 
@@ -84,11 +86,12 @@ def _handle_create(handler, payload):
         max_depth = max(0, int(payload.get("maxDepth", 3) or 3))
         robots_mode = payload.get("robotsMode") or "respect"
         render_js = bool(payload.get("renderJs", False))
+        schedule_cron = (payload.get("scheduleCron") or "").strip() or None
 
         with SessionLocal() as db:
             crawl = create_crawl(
                 db, root_url, max_pages=max_pages, max_depth=max_depth,
-                robots_mode=robots_mode, render_js=render_js,
+                robots_mode=robots_mode, render_js=render_js, schedule_cron=schedule_cron,
             )
             crawl_id = crawl.id
 
@@ -110,7 +113,8 @@ def _handle_status(handler, payload):
                 send_json(handler, 404, {"error": f"No crawl with id {crawl_id}"})
                 return
             project = db.get(Project, crawl.project_id)
-            send_json(handler, 200, _crawl_summary(crawl, project.root_url if project else None))
+            crawl_config = db.get(CrawlConfig, crawl.crawl_config_id) if crawl.crawl_config_id else None
+            send_json(handler, 200, _crawl_summary(crawl, project.root_url if project else None, crawl_config))
     except Exception:  # noqa: BLE001
         logger.exception("crawls.py (status) request failed")
         send_json(handler, 500, {"error": "Internal error while fetching crawl status."})
@@ -187,6 +191,35 @@ def _handle_compare(handler, payload):
     except Exception:  # noqa: BLE001
         logger.exception("crawls.py (compare) request failed")
         send_json(handler, 500, {"error": "Internal error while comparing crawls."})
+
+
+def _handle_set_schedule(handler, payload):
+    try:
+        crawl_id = _parse_crawl_id(handler, payload)
+        if crawl_id is None:
+            return
+        # "" and null both mean "turn the schedule off" — the client sends
+        # either depending on how the picker's empty state is represented.
+        schedule_cron = (payload.get("scheduleCron") or "").strip() or None
+
+        with SessionLocal() as db:
+            crawl = db.get(Crawl, crawl_id)
+            if crawl is None:
+                send_json(handler, 404, {"error": f"No crawl with id {crawl_id}"})
+                return
+            if crawl.crawl_config_id is None:
+                send_json(handler, 400, {"error": "This crawl has no associated config to schedule."})
+                return
+            crawl_config = set_crawl_config_schedule(db, crawl.crawl_config_id, schedule_cron)
+            send_json(handler, 200, {
+                "scheduleCron": crawl_config.schedule_cron,
+                "nextRunAt": crawl_config.next_run_at.isoformat() if crawl_config.next_run_at else None,
+            })
+    except ValueError as e:
+        send_json(handler, 400, {"error": str(e)})
+    except Exception:  # noqa: BLE001
+        logger.exception("crawls.py (setSchedule) request failed")
+        send_json(handler, 500, {"error": "Internal error while updating the schedule."})
 
 
 def _parse_pagination(payload) -> tuple[int, int]:
@@ -322,6 +355,7 @@ _ACTIONS = {
     "pages": _handle_pages,
     "issues": _handle_issues,
     "compare": _handle_compare,
+    "setSchedule": _handle_set_schedule,
 }
 
 

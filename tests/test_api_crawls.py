@@ -95,7 +95,7 @@ def _project_id_of(session_factory, crawl_id) -> int:
 
 def test_all_actions_registered():
     assert set(crawls._ACTIONS) == {
-        "list", "create", "status", "thematic", "trend", "pages", "issues", "compare",
+        "list", "create", "status", "thematic", "trend", "pages", "issues", "compare", "setSchedule",
     }
 
 
@@ -428,3 +428,90 @@ def test_compare_with_invalid_crawl_id_returns_400():
     crawls.handler.do_POST(h)
     status, _ = _sent_status_and_body(h)
     assert status == 400
+
+
+def test_create_with_schedule_cron_sets_it_on_the_crawl_config(isolated_db):
+    h = _mock_handler({"action": "create", "rootUrl": "https://example.com", "scheduleCron": "0 0 * * *"})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    with isolated_db() as db:
+        crawl = db.get(Crawl, body["crawlId"])
+        config = db.get(CrawlConfig, crawl.crawl_config_id)
+        assert config.schedule_cron == "0 0 * * *"
+        assert config.next_run_at is not None
+
+
+def test_status_includes_null_schedule_when_unscheduled(isolated_db):
+    crawl_id = _seed_crawl(isolated_db)
+
+    h = _mock_handler({"action": "status", "crawlId": crawl_id})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    assert body["scheduleCron"] is None
+    assert body["nextRunAt"] is None
+
+
+def test_status_includes_schedule_when_set(isolated_db):
+    h = _mock_handler({"action": "create", "rootUrl": "https://example.com", "scheduleCron": "0 0 * * *"})
+    crawls.handler.do_POST(h)
+    crawl_id = _sent_status_and_body(h)[1]["crawlId"]
+
+    h2 = _mock_handler({"action": "status", "crawlId": crawl_id})
+    crawls.handler.do_POST(h2)
+    status, body = _sent_status_and_body(h2)
+
+    assert status == 200
+    assert body["scheduleCron"] == "0 0 * * *"
+    assert body["nextRunAt"] is not None
+
+
+def test_set_schedule_updates_an_existing_crawl(isolated_db):
+    h = _mock_handler({"action": "create", "rootUrl": "https://example.com"})
+    crawls.handler.do_POST(h)
+    crawl_id = _sent_status_and_body(h)[1]["crawlId"]
+
+    h2 = _mock_handler({"action": "setSchedule", "crawlId": crawl_id, "scheduleCron": "0 */6 * * *"})
+    crawls.handler.do_POST(h2)
+    status, body = _sent_status_and_body(h2)
+
+    assert status == 200
+    assert body["scheduleCron"] == "0 */6 * * *"
+    assert body["nextRunAt"] is not None
+
+
+def test_set_schedule_with_empty_string_clears_it(isolated_db):
+    h = _mock_handler({"action": "create", "rootUrl": "https://example.com", "scheduleCron": "0 0 * * *"})
+    crawls.handler.do_POST(h)
+    crawl_id = _sent_status_and_body(h)[1]["crawlId"]
+
+    h2 = _mock_handler({"action": "setSchedule", "crawlId": crawl_id, "scheduleCron": ""})
+    crawls.handler.do_POST(h2)
+    status, body = _sent_status_and_body(h2)
+
+    assert status == 200
+    assert body["scheduleCron"] is None
+    assert body["nextRunAt"] is None
+
+
+def test_set_schedule_with_invalid_cron_returns_400(isolated_db):
+    h = _mock_handler({"action": "create", "rootUrl": "https://example.com"})
+    crawls.handler.do_POST(h)
+    crawl_id = _sent_status_and_body(h)[1]["crawlId"]
+
+    h2 = _mock_handler({"action": "setSchedule", "crawlId": crawl_id, "scheduleCron": "garbage"})
+    crawls.handler.do_POST(h2)
+    status, body = _sent_status_and_body(h2)
+
+    assert status == 400
+    assert "error" in body
+
+
+def test_set_schedule_for_unknown_crawl_returns_404(isolated_db):
+    h = _mock_handler({"action": "setSchedule", "crawlId": 9999, "scheduleCron": "0 0 * * *"})
+    crawls.handler.do_POST(h)
+    status, _ = _sent_status_and_body(h)
+    assert status == 404

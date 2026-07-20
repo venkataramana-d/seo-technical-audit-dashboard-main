@@ -15,6 +15,7 @@ import {
 import { Card, PageHeader, ScoreCircle, TabBar } from "@/components/ui";
 import { GlobeIcon } from "@/components/icons";
 import { formatDate } from "@/lib/format";
+import { SCHEDULE_PRESETS, humanizeCron, presetIdForCron } from "@/lib/schedulePresets";
 
 // Same convention as app/page.tsx's charts — Recharts tooltips ignore
 // Tailwind classes, but CSS variables in inline styles still resolve
@@ -38,6 +39,8 @@ interface CrawlStatus {
   pagesTotalEstimate: number | null;
   startedAt: string | null;
   finishedAt: string | null;
+  scheduleCron: string | null;
+  nextRunAt: string | null;
 }
 
 interface ThemeIssue {
@@ -240,12 +243,133 @@ function useCrawlListing<T>(action: "pages" | "issues", crawlId: number, filters
   return { data, error, loading };
 }
 
+function ScheduleCard({
+  crawlId,
+  scheduleCron,
+  nextRunAt,
+  onChange,
+}: {
+  crawlId: number;
+  scheduleCron: string | null;
+  nextRunAt: string | null;
+  onChange: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [preset, setPreset] = useState(() => presetIdForCron(scheduleCron));
+  const [customCron, setCustomCron] = useState(scheduleCron && presetIdForCron(scheduleCron) === "custom" ? scheduleCron : "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(nextCron: string | null) {
+    setSaving(true);
+    setError(null);
+    try {
+      await postCrawlsAction({ action: "setSchedule", crawlId, scheduleCron: nextCron });
+      setEditing(false);
+      onChange();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update schedule.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function applyPreset() {
+    const cron =
+      preset === "off" ? null : preset === "custom" ? customCron.trim() || null : (SCHEDULE_PRESETS.find((p) => p.id === preset)?.cron ?? null);
+    save(cron);
+  }
+
+  return (
+    <Card>
+      <h2 className="mb-3 text-sm font-semibold text-[var(--seo-heading)]">Schedule</h2>
+      {!editing ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="text-sm text-[var(--seo-text)]">{humanizeCron(scheduleCron)}</div>
+            {scheduleCron ? (
+              <div className="mt-0.5 text-xs text-[var(--seo-muted)]">Next run {formatDate(nextRunAt)}</div>
+            ) : null}
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setPreset(presetIdForCron(scheduleCron));
+                setCustomCron(scheduleCron && presetIdForCron(scheduleCron) === "custom" ? scheduleCron : "");
+                setEditing(true);
+              }}
+              className="rounded-lg border border-[var(--seo-border)] px-3 py-1.5 text-xs font-medium text-[var(--seo-text)] hover:bg-[var(--seo-card-hover)]"
+            >
+              {scheduleCron ? "Change" : "Set schedule"}
+            </button>
+            {scheduleCron ? (
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => save(null)}
+                className="rounded-lg border border-[var(--seo-border)] px-3 py-1.5 text-xs font-medium text-[var(--seo-text)] hover:bg-[var(--seo-card-hover)] disabled:opacity-60"
+              >
+                Turn off
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={preset}
+            onChange={(e) => setPreset(e.target.value)}
+            className="rounded-lg border border-[var(--seo-border)] bg-[var(--seo-card-bg)] px-3 py-1.5 text-sm text-[var(--seo-heading)] outline-none focus:border-[var(--seo-accent)]"
+          >
+            {SCHEDULE_PRESETS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+          {preset === "custom" ? (
+            <input
+              type="text"
+              placeholder="0 0 * * *"
+              value={customCron}
+              onChange={(e) => setCustomCron(e.target.value)}
+              className="rounded-lg border border-[var(--seo-border)] bg-[var(--seo-card-bg)] px-3 py-1.5 font-mono text-sm text-[var(--seo-heading)] outline-none focus:border-[var(--seo-accent)]"
+            />
+          ) : null}
+          <button
+            type="button"
+            disabled={saving}
+            onClick={applyPreset}
+            className="rounded-lg btn-gradient px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60"
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => setEditing(false)}
+            className="rounded-lg border border-[var(--seo-border)] px-3 py-1.5 text-xs font-medium text-[var(--seo-text)] hover:bg-[var(--seo-card-hover)]"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+      {error ? <p className="mt-2 text-xs text-[var(--seo-error)]">{error}</p> : null}
+    </Card>
+  );
+}
+
 function OverviewTab({
   status,
   themes,
+  crawlId,
+  onScheduleChange,
 }: {
   status: CrawlStatus;
   themes: Record<string, ThemeReport> | null;
+  crawlId: number;
+  onScheduleChange: () => void;
 }) {
   return (
     <div className="flex flex-col gap-4">
@@ -263,6 +387,13 @@ function OverviewTab({
           </div>
         </Card>
       </div>
+
+      <ScheduleCard
+        crawlId={crawlId}
+        scheduleCron={status.scheduleCron}
+        nextRunAt={status.nextRunAt}
+        onChange={onScheduleChange}
+      />
 
       <Card>
         <h2 className="mb-3 text-sm font-semibold text-[var(--seo-heading)]">Thematic report</h2>
@@ -730,6 +861,16 @@ export default function CrawlDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [crawlId]);
 
+  async function refetchStatus() {
+    try {
+      const data = await postCrawlsAction<CrawlStatus>({ action: "status", crawlId });
+      setStatus(data);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load crawl status.");
+    }
+  }
+
   if (!Number.isFinite(crawlId)) {
     return <p className="text-sm text-[var(--seo-error)]">Invalid crawl id.</p>;
   }
@@ -785,7 +926,9 @@ export default function CrawlDetailPage() {
               produced final results — matches the existing gate for the
               Overview scores/thematic report, not a new restriction. */}
           <TabBar tabs={TABS} active={activeTab} onChange={setActiveTab} />
-          {activeTab === "Overview" ? <OverviewTab status={status} themes={themes} /> : null}
+          {activeTab === "Overview" ? (
+            <OverviewTab status={status} themes={themes} crawlId={crawlId} onScheduleChange={refetchStatus} />
+          ) : null}
           {activeTab === "Pages" ? <PagesTab crawlId={crawlId} /> : null}
           {activeTab === "Issues" ? <IssuesTab crawlId={crawlId} /> : null}
           {activeTab === "Compare" ? <CompareTab crawlId={crawlId} rootUrl={status.rootUrl} /> : null}

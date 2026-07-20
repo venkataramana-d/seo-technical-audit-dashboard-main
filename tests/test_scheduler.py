@@ -108,3 +108,50 @@ def test_create_crawl_with_schedule_cron_sets_next_run_at(isolated_db):
         assert config.schedule_cron == "0 0 * * *"
         assert config.next_run_at is not None
         assert config.next_run_at > datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def test_set_crawl_config_schedule_updates_existing_row(isolated_db):
+    from worker import crawl_service
+
+    with isolated_db() as db:
+        crawl = crawl_service.create_crawl(db, "https://example.com", max_pages=5)
+        config_id = crawl.crawl_config_id
+        assert db.get(CrawlConfig, config_id).schedule_cron is None
+
+        updated = crawl_service.set_crawl_config_schedule(db, config_id, "0 0 * * *")
+
+        assert updated.id == config_id  # same row, not a new one
+        assert updated.schedule_cron == "0 0 * * *"
+        assert updated.next_run_at is not None
+        assert updated.next_run_at > datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def test_set_crawl_config_schedule_with_none_clears_it(isolated_db):
+    from worker import crawl_service
+
+    with isolated_db() as db:
+        crawl = crawl_service.create_crawl(db, "https://example.com", max_pages=5, schedule_cron="0 0 * * *")
+        config_id = crawl.crawl_config_id
+        assert db.get(CrawlConfig, config_id).schedule_cron is not None
+
+        updated = crawl_service.set_crawl_config_schedule(db, config_id, None)
+
+        assert updated.schedule_cron is None
+        assert updated.next_run_at is None
+
+
+def test_set_crawl_config_schedule_rejects_unknown_config_id(isolated_db):
+    from worker import crawl_service
+
+    with isolated_db() as db:
+        with pytest.raises(ValueError, match="no such crawl_config_id"):
+            crawl_service.set_crawl_config_schedule(db, 9999, "0 0 * * *")
+
+
+def test_set_crawl_config_schedule_rejects_invalid_cron(isolated_db):
+    from worker import crawl_service
+
+    with isolated_db() as db:
+        crawl = crawl_service.create_crawl(db, "https://example.com", max_pages=5)
+        with pytest.raises(ValueError):
+            crawl_service.set_crawl_config_schedule(db, crawl.crawl_config_id, "not a cron expression")

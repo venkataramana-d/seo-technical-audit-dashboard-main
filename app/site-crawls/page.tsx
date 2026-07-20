@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Card, EmptyState, PageHeader, ScoreCircle } from "@/components/ui";
 import { GlobeIcon, PlusIcon } from "@/components/icons";
 import { formatDate } from "@/lib/format";
+import { SCHEDULE_PRESETS } from "@/lib/schedulePresets";
 
 interface CrawlSummary {
   id: number;
@@ -55,6 +56,8 @@ export default function SiteCrawlsPage() {
   const [maxDepth, setMaxDepth] = useState(3);
   const [robotsMode, setRobotsMode] = useState("respect");
   const [renderJs, setRenderJs] = useState(false);
+  const [schedulePreset, setSchedulePreset] = useState("off");
+  const [customCron, setCustomCron] = useState("");
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
 
@@ -77,6 +80,12 @@ export default function SiteCrawlsPage() {
     setStarting(true);
     setStartError(null);
     try {
+      const scheduleCron =
+        schedulePreset === "off"
+          ? null
+          : schedulePreset === "custom"
+            ? customCron.trim() || null
+            : (SCHEDULE_PRESETS.find((p) => p.id === schedulePreset)?.cron ?? null);
       const data = await postCrawlsAction<{ crawlId: number }>({
         action: "create",
         rootUrl: rootUrl.trim(),
@@ -84,6 +93,7 @@ export default function SiteCrawlsPage() {
         maxDepth,
         robotsMode,
         renderJs,
+        scheduleCron,
       });
       router.push(`/site-crawls/${data.crawlId}`);
     } catch (err) {
@@ -154,6 +164,29 @@ export default function SiteCrawlsPage() {
           />
           Render JavaScript (slower — for SPAs/client-rendered sites)
         </label>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <label className="text-sm text-[var(--seo-text)]">Repeat this crawl:</label>
+          <select
+            value={schedulePreset}
+            onChange={(e) => setSchedulePreset(e.target.value)}
+            className="rounded-lg border border-[var(--seo-border)] bg-[var(--seo-card-bg)] px-3 py-1.5 text-sm text-[var(--seo-heading)] outline-none focus:border-[var(--seo-accent)]"
+          >
+            {SCHEDULE_PRESETS.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.label}
+              </option>
+            ))}
+          </select>
+          {schedulePreset === "custom" ? (
+            <input
+              type="text"
+              placeholder="0 0 * * *"
+              value={customCron}
+              onChange={(e) => setCustomCron(e.target.value)}
+              className="rounded-lg border border-[var(--seo-border)] bg-[var(--seo-card-bg)] px-3 py-1.5 font-mono text-sm text-[var(--seo-heading)] outline-none focus:border-[var(--seo-accent)]"
+            />
+          ) : null}
+        </div>
         <p className="mt-2 text-xs text-[var(--seo-muted)]">
           Max pages / depth (0 = homepage only). Crawls run in the background — the worker process
           (<code className="font-mono">python -m worker</code>) must be running for a queued crawl
