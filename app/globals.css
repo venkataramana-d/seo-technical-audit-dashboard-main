@@ -186,15 +186,6 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* Break an element out of its centered max-width parent to span the full
-   viewport width (used by the wide Results table so all columns + full URLs are
-   visible without horizontal scroll). Pair with horizontal padding inside. */
-.full-bleed {
-  width: 100vw;
-  margin-left: calc(50% - 50vw);
-  margin-right: calc(50% - 50vw);
-}
-
 .font-mono {
   font-family: var(--font-mono);
 }

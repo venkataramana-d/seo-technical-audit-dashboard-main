@@ -26,10 +26,14 @@ prior standalone Streamlit SEO audit tool ported in on top.
   table is now flat, sorted, with a Type column and Type filter — the category
   comes from `lib/pageCategory.ts::categorizeUrl(url, audit_type)`, keyed off the
   URL path segment (Course/Blog/Topic/Category/Tag/Type/Static/Home) with the
-  backend `audit_type` as a fallback. Session 26: the table is **full-width**
-  via the `.full-bleed` globals.css utility (spans the viewport, breaking out of
-  the centered `max-w-6xl`), the CHECKLIST and TOP ISSUE columns are **merged**
-  into one cell, and the URL column shows the **full URL** (`break-all`).)
+  backend `audit_type` as a fallback. Session 26 merged the CHECKLIST and TOP
+  ISSUE columns into one cell and made the URL column show the **full URL**
+  (`break-all`); it also added a `.full-bleed` viewport-width utility to make
+  the table full-width, later removed (a later session) because `100vw`/`50vw`
+  don't account for AppShell's fixed-width sidebar, so the table rendered
+  wider than the actual content column and caused page-level horizontal
+  scroll. The table now just sits in the normal (wide) content column with
+  its own `overflow-x-auto`.)
   The former standalone `links`, `headings`, and `performance` pages are folded
   into `app/detail/page.tsx` as tabs backed by `components/detail/LinksView.tsx`,
   `HeadingsView.tsx`, and `PerformanceView.tsx`. Report export is NOT a page: it

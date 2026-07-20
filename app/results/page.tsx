@@ -190,7 +190,7 @@ export default function ResultsPage() {
   const [scoreMax, setScoreMax] = useState(100);
   const [brokenOnly, setBrokenOnly] = useState(false);
   const [search, setSearch] = useState("");
-  const [sortMode, setSortMode] = useState<SortMode>("score-asc");
+  const [sortMode, setSortMode] = useState<SortMode>("alpha");
   const [confirmClear, setConfirmClear] = useState(false);
   const [h1ReportOpen, setH1ReportOpen] = useState(false);
   const [typeFilter, setTypeFilter] = useState("all");
@@ -468,10 +468,7 @@ export default function ResultsPage() {
 
       <ExportBar results={filtered} totalCount={results.length} />
 
-      {/* Full-bleed: the table spans the full viewport width (breaking out of the
-          page's centered max-width) so every column + full URLs are visible
-          without horizontal scroll. */}
-      <div className="full-bleed mb-4 px-4 md:px-8">
+      <div className="mb-4">
         <Card className="overflow-hidden p-0">
           {sortedRows.length === 0 ? (
             <div className="px-4 py-10 text-center text-sm text-[var(--seo-muted)]">
