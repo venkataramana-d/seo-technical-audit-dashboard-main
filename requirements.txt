@@ -13,3 +13,5 @@ httpx[http2]>=0.27
 # Phase 0 platform foundations (worker/, alembic/) — see worker/README.md
 sqlalchemy>=2.0
 alembic>=1.13
+# Phase 3 scheduling (worker/scheduler.py) — cron expression parsing
+croniter>=2.0

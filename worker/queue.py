@@ -68,12 +68,13 @@ def _claim_next_job(db) -> Job | None:
 class Worker:
     def __init__(self, poll_interval: float = 2.0):
         self.poll_interval = poll_interval
-        self._running = False
 
     def run_once(self) -> bool:
         """Claim and process a single queued job, if one exists. Returns
-        True if a job was processed, False if the queue was empty —
-        separated from `run()` so tests don't need an interruptible loop."""
+        True if a job was processed, False if the queue was empty. The
+        caller drives the loop (see worker/__main__.py, which also
+        interleaves a periodic scheduler check between calls) — kept this
+        way so tests don't need an interruptible loop either."""
         with SessionLocal() as db:
             job = _claim_next_job(db)
             if job is None:
@@ -106,13 +107,3 @@ class Worker:
             time.monotonic() - start,
         )
         return True
-
-    def run(self) -> None:
-        self._running = True
-        logger.info("worker started, polling every %.1fs", self.poll_interval)
-        while self._running:
-            if not self.run_once():
-                time.sleep(self.poll_interval)
-
-    def stop(self) -> None:
-        self._running = False

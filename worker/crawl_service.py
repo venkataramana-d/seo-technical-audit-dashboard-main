@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 
+from croniter import croniter
 from sqlalchemy import select
 
 from modules.crawler import CrawlConfig as ModuleCrawlConfig
@@ -83,10 +84,16 @@ def create_crawl(
     render_js: bool = False,
     requests_per_second: float = 1.0,
     max_duration_minutes: int = 60,
+    schedule_cron: str | None = None,
 ) -> Crawl:
     """Creates a CrawlConfig row (folding fields with no dedicated column —
     max_depth/include_subdomains/patterns/seed_source/url_list/crawl_delay/
-    run_full_audit — into scope_json) and a queued Crawl row tied to it."""
+    run_full_audit — into scope_json) and a queued Crawl row tied to it.
+
+    `schedule_cron`, if given, attaches a Phase 3 recurring schedule to the
+    new CrawlConfig and computes its first `next_run_at` — after this initial
+    (manual) crawl, `worker/scheduler.py::enqueue_due_crawls()` takes over,
+    reusing this same CrawlConfig for every subsequent scheduled run."""
     project = get_or_create_default_project(db, root_url)
 
     scope_json = {
@@ -110,7 +117,10 @@ def create_crawl(
         concurrency=max_workers,
         requests_per_second=requests_per_second,
         user_agent=user_agent,
+        schedule_cron=schedule_cron,
     )
+    if schedule_cron:
+        crawl_config.next_run_at = croniter(schedule_cron, datetime.now(timezone.utc)).get_next(datetime)
     db.add(crawl_config)
     db.flush()
 

@@ -101,6 +101,9 @@ class CrawlConfig(Base):
     requests_per_second: Mapped[float] = mapped_column(Float, default=1.0)
     user_agent: Mapped[str] = mapped_column(String(255), default="SEOAuditBot/1.0")
     schedule_cron: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Phase 3: when this config's schedule is next due. NULL means either
+    # unscheduled (schedule_cron is also NULL) or due immediately once set.
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     project: Mapped["Project"] = relationship(back_populates="crawl_configs")
 
