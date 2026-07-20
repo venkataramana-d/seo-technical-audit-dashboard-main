@@ -4,8 +4,8 @@ schedule it to repeat. Same one-file/action-dispatch convention as
 api/audit-pipeline.py — POST {"action": ..., ...} rather than REST
 verbs/path params.
 
-Deferred (not this file's job yet): the links tab, site-structure graph.
-Each is an incremental addition to this same dispatch table.
+Deferred (not this file's job yet): the site-structure graph. An
+incremental addition to this same dispatch table, same as "links" was.
 
 Talks straight to worker/*.py — same DB file the worker process reads/
 writes (worker/db/session.py resolves an absolute path), no separate
@@ -24,7 +24,7 @@ from modules._http import bulk_url_cap, read_json_body, require_str, send_json  
 from sqlalchemy import func, select  # noqa: E402
 from worker.crawl_diff import compare_crawls, get_previous_completed_crawl, get_score_trend  # noqa: E402
 from worker.crawl_service import create_crawl, set_crawl_config_schedule  # noqa: E402
-from worker.db.models import Crawl, CrawlConfig, Issue, Page, Project  # noqa: E402
+from worker.db.models import Crawl, CrawlConfig, Issue, Link, Page, Project  # noqa: E402
 from worker.db.session import SessionLocal  # noqa: E402
 from worker.queue import enqueue  # noqa: E402
 from worker.site_audit import get_thematic_report  # noqa: E402
@@ -346,6 +346,79 @@ def _handle_issues(handler, payload):
         send_json(handler, 500, {"error": "Internal error while listing issues."})
 
 
+def _handle_links(handler, payload):
+    try:
+        crawl_id = _parse_crawl_id(handler, payload)
+        if crawl_id is None:
+            return
+        page_num, page_size = _parse_pagination(payload)
+        link_type = (payload.get("linkType") or "").strip() or None
+        broken_only = bool(payload.get("brokenOnly"))
+        search = (payload.get("search") or "").strip()
+
+        with SessionLocal() as db:
+            filters = [Page.crawl_id == crawl_id]
+            if link_type:
+                filters.append(Link.link_type == link_type)
+            if broken_only:
+                # Only internal links are ever checked for brokenness (see
+                # site_audit.py::_detect_broken_internal_links) — external/
+                # special links leave is_broken NULL, so this filter never
+                # needs an explicit link_type == "internal" alongside it.
+                filters.append(Link.is_broken.is_(True))
+            if search:
+                filters.append(Link.target_url.ilike(f"%{search}%") | Link.anchor_text.ilike(f"%{search}%"))
+
+            total = (
+                db.execute(select(func.count()).select_from(Link).join(Page, Link.page_id == Page.id).where(*filters))
+                .scalar_one()
+            )
+            rows = db.execute(
+                select(Link, Page.url)
+                .join(Page, Link.page_id == Page.id)
+                .where(*filters)
+                .order_by(Link.id.asc())
+                .offset((page_num - 1) * page_size)
+                .limit(page_size)
+            ).all()
+
+            link_type_counts = dict(
+                db.execute(
+                    select(Link.link_type, func.count())
+                    .join(Page, Link.page_id == Page.id)
+                    .where(Page.crawl_id == crawl_id)
+                    .group_by(Link.link_type)
+                ).all()
+            )
+
+            links_out = [
+                {
+                    "id": link.id,
+                    "targetUrl": link.target_url,
+                    "linkType": link.link_type,
+                    "domLocation": link.dom_location,
+                    "anchorText": link.anchor_text,
+                    "isNofollow": link.is_nofollow,
+                    "isDofollow": link.is_dofollow,
+                    "statusCode": link.status_code,
+                    "isBroken": link.is_broken,
+                    "pageUrl": page_url,
+                }
+                for link, page_url in rows
+            ]
+
+        send_json(handler, 200, {
+            "links": links_out,
+            "total": total,
+            "page": page_num,
+            "pageSize": page_size,
+            "linkTypeCounts": link_type_counts,
+        })
+    except Exception:  # noqa: BLE001
+        logger.exception("crawls.py (links) request failed")
+        send_json(handler, 500, {"error": "Internal error while listing links."})
+
+
 _ACTIONS = {
     "list": _handle_list,
     "create": _handle_create,
@@ -354,6 +427,7 @@ _ACTIONS = {
     "trend": _handle_trend,
     "pages": _handle_pages,
     "issues": _handle_issues,
+    "links": _handle_links,
     "compare": _handle_compare,
     "setSchedule": _handle_set_schedule,
 }

@@ -92,6 +92,27 @@ interface IssuesResponse {
   categories: string[];
 }
 
+interface LinkRow {
+  id: number;
+  targetUrl: string;
+  linkType: string;
+  domLocation: string | null;
+  anchorText: string | null;
+  isNofollow: boolean;
+  isDofollow: boolean;
+  statusCode: number | null;
+  isBroken: boolean | null;
+  pageUrl: string | null;
+}
+
+interface LinksResponse {
+  links: LinkRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  linkTypeCounts: Record<string, number>;
+}
+
 interface CrawlListItem {
   id: number;
   rootUrl: string | null;
@@ -137,7 +158,7 @@ interface TrendPoint {
 
 const POLL_INTERVAL_MS = 3000;
 const FINISHED_STATUSES = new Set(["completed", "failed"]);
-const TABS = ["Overview", "Pages", "Issues", "Compare"] as const;
+const TABS = ["Overview", "Pages", "Issues", "Links", "Compare"] as const;
 type Tab = (typeof TABS)[number];
 
 const SEVERITY_STYLE: Record<string, { color: string; bg: string }> = {
@@ -212,7 +233,7 @@ async function postCrawlsAction<T>(body: Record<string, unknown>): Promise<T> {
 
 /** Shared fetch-on-filter-change plumbing for the Pages/Issues tabs — same
  * action-dispatch call, just a different action name and filter shape. */
-function useCrawlListing<T>(action: "pages" | "issues", crawlId: number, filters: Record<string, unknown>) {
+function useCrawlListing<T>(action: "pages" | "issues" | "links", crawlId: number, filters: Record<string, unknown>) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -624,6 +645,179 @@ function IssuesTab({ crawlId }: { crawlId: number }) {
   );
 }
 
+const LINK_TYPE_LABELS: Record<string, string> = {
+  internal: "Internal",
+  external: "External",
+  mailto: "Mailto",
+  tel: "Tel",
+  anchor: "Anchor",
+  javascript: "JS",
+};
+
+function LinksTab({ crawlId }: { crawlId: number }) {
+  const [linkType, setLinkType] = useState("");
+  const [brokenOnly, setBrokenOnly] = useState(false);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const pageSize = 25;
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedSearch(search);
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [linkType, brokenOnly]);
+
+  const { data, error, loading } = useCrawlListing<LinksResponse>("links", crawlId, {
+    linkType: linkType || undefined,
+    brokenOnly: brokenOnly || undefined,
+    search: debouncedSearch,
+    page,
+    pageSize,
+  });
+  const totalPages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
+  const linkTypeCounts = data?.linkTypeCounts || {};
+  const allTypesCount = Object.values(linkTypeCounts).reduce((a, b) => a + b, 0);
+
+  return (
+    <Card>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap gap-1">
+          <button
+            type="button"
+            onClick={() => setLinkType("")}
+            className="pill"
+            style={{
+              color: linkType === "" ? "#fff" : "var(--seo-text)",
+              backgroundColor: linkType === "" ? "var(--seo-accent)" : "var(--seo-card-hover)",
+            }}
+          >
+            All ({allTypesCount})
+          </button>
+          {Object.keys(LINK_TYPE_LABELS)
+            .filter((t) => linkTypeCounts[t])
+            .map((t) => {
+              const isActive = linkType === t;
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setLinkType(t)}
+                  className="pill"
+                  style={{
+                    color: isActive ? "#fff" : "var(--seo-text)",
+                    backgroundColor: isActive ? "var(--seo-accent)" : "var(--seo-card-hover)",
+                  }}
+                >
+                  {LINK_TYPE_LABELS[t]} ({linkTypeCounts[t]})
+                </button>
+              );
+            })}
+          <button
+            type="button"
+            onClick={() => setBrokenOnly((v) => !v)}
+            className="pill"
+            style={{
+              color: brokenOnly ? "#fff" : "var(--seo-error)",
+              backgroundColor: brokenOnly ? "var(--seo-error)" : "var(--seo-error-bg)",
+            }}
+          >
+            Broken only
+          </button>
+        </div>
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search URL or anchor text…"
+          className="min-w-0 flex-1 rounded-lg border border-[var(--seo-border-strong)] bg-[var(--seo-card-bg)] px-2.5 py-1.5 text-sm text-[var(--seo-text)] outline-none focus:border-[var(--seo-accent)]"
+        />
+        {data ? (
+          <span className="text-xs text-[var(--seo-muted)]">
+            {data.total} link{data.total === 1 ? "" : "s"}
+          </span>
+        ) : null}
+      </div>
+      {error ? <p className="text-xs text-[var(--seo-error)]">{error}</p> : null}
+      {loading && !data ? <p className="text-xs text-[var(--seo-muted)]">Loading…</p> : null}
+      {data && data.links.length === 0 ? (
+        <p className="text-xs text-[var(--seo-muted)]">No links found.</p>
+      ) : null}
+      {data && data.links.length > 0 ? (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-[var(--seo-border)] text-xs text-[var(--seo-muted)]">
+                <th className="pb-2 pr-3 font-medium">Target URL</th>
+                <th className="pb-2 pr-3 font-medium">Type</th>
+                <th className="pb-2 pr-3 font-medium">Anchor text</th>
+                <th className="pb-2 pr-3 font-medium">Location</th>
+                <th className="pb-2 pr-3 font-medium">Follow</th>
+                <th className="pb-2 pr-3 font-medium">Status</th>
+                <th className="pb-2 font-medium">From page</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.links.map((l) => (
+                <tr key={l.id} className="border-b border-[var(--seo-border)] last:border-0">
+                  <td
+                    className="max-w-xs truncate py-2 pr-3 font-mono text-xs text-[var(--seo-heading)]"
+                    title={l.targetUrl}
+                  >
+                    {l.targetUrl}
+                  </td>
+                  <td className="py-2 pr-3 text-xs text-[var(--seo-text)]">
+                    {LINK_TYPE_LABELS[l.linkType] || l.linkType}
+                  </td>
+                  <td className="max-w-[200px] truncate py-2 pr-3 text-xs text-[var(--seo-text)]" title={l.anchorText || ""}>
+                    {l.anchorText || "—"}
+                  </td>
+                  <td className="py-2 pr-3 text-xs text-[var(--seo-text)]">{l.domLocation || "—"}</td>
+                  <td className="py-2 pr-3">
+                    <span
+                      className="pill"
+                      style={{
+                        color: l.isNofollow ? "var(--seo-warning)" : "var(--seo-muted)",
+                        backgroundColor: l.isNofollow ? "var(--seo-warning-bg)" : "var(--seo-card-hover)",
+                      }}
+                    >
+                      {l.isNofollow ? "Nofollow" : "Dofollow"}
+                    </span>
+                  </td>
+                  <td className="py-2 pr-3 text-xs tabular-nums">
+                    {l.isBroken ? (
+                      <span className="pill" style={{ color: "var(--seo-error)", backgroundColor: "var(--seo-error-bg)" }}>
+                        {l.statusCode ?? "Broken"}
+                      </span>
+                    ) : l.statusCode != null ? (
+                      <span className="text-[var(--seo-text)]">{l.statusCode}</span>
+                    ) : (
+                      <span className="text-[var(--seo-muted)]">Not checked</span>
+                    )}
+                  </td>
+                  <td
+                    className="max-w-[200px] truncate py-2 font-mono text-xs text-[var(--seo-muted)]"
+                    title={l.pageUrl || undefined}
+                  >
+                    {l.pageUrl || "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      {data ? <PaginationControls page={data.page} totalPages={totalPages} onChange={setPage} /> : null}
+    </Card>
+  );
+}
+
 function ScoreDelta({ label, delta }: { label: string; delta: number | null | undefined }) {
   const color =
     delta == null || delta === 0 ? "var(--seo-muted)" : delta > 0 ? "var(--seo-success)" : "var(--seo-error)";
@@ -931,6 +1125,7 @@ export default function CrawlDetailPage() {
           ) : null}
           {activeTab === "Pages" ? <PagesTab crawlId={crawlId} /> : null}
           {activeTab === "Issues" ? <IssuesTab crawlId={crawlId} /> : null}
+          {activeTab === "Links" ? <LinksTab crawlId={crawlId} /> : null}
           {activeTab === "Compare" ? <CompareTab crawlId={crawlId} rootUrl={status.rootUrl} /> : null}
         </>
       )}

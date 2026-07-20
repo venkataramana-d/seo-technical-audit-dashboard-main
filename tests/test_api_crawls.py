@@ -16,7 +16,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from worker import crawl_diff, queue as queue_module, site_audit
-from worker.db.models import Base, Crawl, CrawlConfig, Issue, Job, Organization, Page, Project
+from worker.db.models import Base, Crawl, CrawlConfig, Issue, Job, Link, Organization, Page, Project
 
 
 def _load(name, relative_path):
@@ -95,7 +95,7 @@ def _project_id_of(session_factory, crawl_id) -> int:
 
 def test_all_actions_registered():
     assert set(crawls._ACTIONS) == {
-        "list", "create", "status", "thematic", "trend", "pages", "issues", "compare", "setSchedule",
+        "list", "create", "status", "thematic", "trend", "pages", "issues", "links", "compare", "setSchedule",
     }
 
 
@@ -515,3 +515,121 @@ def test_set_schedule_for_unknown_crawl_returns_404(isolated_db):
     crawls.handler.do_POST(h)
     status, _ = _sent_status_and_body(h)
     assert status == 404
+
+
+def _seed_link(session_factory, page_id, *, target_url, link_type="internal", anchor_text=None,
+                dom_location=None, is_nofollow=False, is_dofollow=True, status_code=None, is_broken=None) -> int:
+    with session_factory() as db:
+        link = Link(
+            page_id=page_id, target_url=target_url, link_type=link_type, anchor_text=anchor_text,
+            dom_location=dom_location, is_nofollow=is_nofollow, is_dofollow=is_dofollow,
+            status_code=status_code, is_broken=is_broken,
+        )
+        db.add(link)
+        db.commit()
+        return link.id
+
+
+def test_links_returns_paginated_results_with_source_page_url(isolated_db):
+    crawl_id = _seed_crawl(isolated_db)
+    page_id = _seed_page(isolated_db, crawl_id, url="https://example.com/a")
+    _seed_link(isolated_db, page_id, target_url="https://example.com/b", anchor_text="B", dom_location="nav")
+
+    h = _mock_handler({"action": "links", "crawlId": crawl_id})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    assert body["total"] == 1
+    link = body["links"][0]
+    assert link["targetUrl"] == "https://example.com/b"
+    assert link["anchorText"] == "B"
+    assert link["domLocation"] == "nav"
+    assert link["pageUrl"] == "https://example.com/a"
+    assert link["linkType"] == "internal"
+
+
+def test_links_filters_by_link_type(isolated_db):
+    crawl_id = _seed_crawl(isolated_db)
+    page_id = _seed_page(isolated_db, crawl_id, url="https://example.com/a")
+    _seed_link(isolated_db, page_id, target_url="https://example.com/b", link_type="internal")
+    _seed_link(isolated_db, page_id, target_url="https://other.com", link_type="external")
+
+    h = _mock_handler({"action": "links", "crawlId": crawl_id, "linkType": "external"})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    assert body["total"] == 1
+    assert body["links"][0]["targetUrl"] == "https://other.com"
+
+
+def test_links_filters_broken_only(isolated_db):
+    crawl_id = _seed_crawl(isolated_db)
+    page_id = _seed_page(isolated_db, crawl_id, url="https://example.com/a")
+    _seed_link(isolated_db, page_id, target_url="https://example.com/gone", status_code=404, is_broken=True)
+    _seed_link(isolated_db, page_id, target_url="https://example.com/ok", status_code=200, is_broken=False)
+
+    h = _mock_handler({"action": "links", "crawlId": crawl_id, "brokenOnly": True})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    assert body["total"] == 1
+    assert body["links"][0]["targetUrl"] == "https://example.com/gone"
+    assert body["links"][0]["isBroken"] is True
+    assert body["links"][0]["statusCode"] == 404
+
+
+def test_links_search_filters_by_url_or_anchor_text(isolated_db):
+    crawl_id = _seed_crawl(isolated_db)
+    page_id = _seed_page(isolated_db, crawl_id, url="https://example.com/a")
+    _seed_link(isolated_db, page_id, target_url="https://example.com/blog/post-1", anchor_text="Read more")
+    _seed_link(isolated_db, page_id, target_url="https://example.com/contact", anchor_text="Contact us")
+
+    h = _mock_handler({"action": "links", "crawlId": crawl_id, "search": "blog"})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+    assert status == 200
+    assert body["total"] == 1
+    assert body["links"][0]["targetUrl"] == "https://example.com/blog/post-1"
+
+    h2 = _mock_handler({"action": "links", "crawlId": crawl_id, "search": "contact us"})
+    crawls.handler.do_POST(h2)
+    status2, body2 = _sent_status_and_body(h2)
+    assert status2 == 200
+    assert body2["total"] == 1
+    assert body2["links"][0]["anchorText"] == "Contact us"
+
+
+def test_links_type_counts_are_unfiltered_by_link_type(isolated_db):
+    crawl_id = _seed_crawl(isolated_db)
+    page_id = _seed_page(isolated_db, crawl_id, url="https://example.com/a")
+    _seed_link(isolated_db, page_id, target_url="https://example.com/b", link_type="internal")
+    _seed_link(isolated_db, page_id, target_url="https://other.com", link_type="external")
+    _seed_link(isolated_db, page_id, target_url="mailto:test@example.com", link_type="mailto")
+
+    h = _mock_handler({"action": "links", "crawlId": crawl_id, "linkType": "internal"})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    assert body["total"] == 1  # filtered row count reflects linkType
+    assert body["linkTypeCounts"] == {"internal": 1, "external": 1, "mailto": 1}  # counts stay unfiltered
+
+
+def test_links_pagination_math(isolated_db):
+    crawl_id = _seed_crawl(isolated_db)
+    page_id = _seed_page(isolated_db, crawl_id, url="https://example.com/a")
+    for i in range(5):
+        _seed_link(isolated_db, page_id, target_url=f"https://example.com/{i}")
+
+    h = _mock_handler({"action": "links", "crawlId": crawl_id, "page": 2, "pageSize": 2})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    assert body["total"] == 5
+    assert body["page"] == 2
+    assert body["pageSize"] == 2
+    assert len(body["links"]) == 2

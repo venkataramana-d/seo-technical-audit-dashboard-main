@@ -19,6 +19,7 @@ from croniter import croniter
 from sqlalchemy import select
 
 from modules.crawler import CrawlConfig as ModuleCrawlConfig
+from modules.crawler import normalize_url
 from worker.db.models import Crawl, CrawlConfig, Issue, Link, Organization, Page, Project
 from worker.db.session import SessionLocal
 from worker.site_audit import run_site_audit
@@ -242,12 +243,49 @@ def persist_result(crawl_id: int, url: str, outcome: dict) -> None:
             db.add(page)
             db.flush()  # need page.id for the Link/Issue rows below
 
-            # Scope decision (Phase 1 plan): crawl_site() runs the per-page
-            # audit with check_links=False for speed, so only bare internal
-            # target URLs are available here — no anchor text/DOM
-            # location/nofollow flag. Full link metadata sitewide is Phase 2.
-            for target_url in outcome.get("links", []):
-                db.add(Link(page_id=page.id, target_url=target_url, link_type="internal"))
+            # crawl_site() now runs the per-page audit with check_links=True
+            # (pure DOM parsing, no extra HTTP requests), so the full
+            # per-link metadata modules/link_auditor.py already extracts —
+            # anchor text, rel=nofollow, DOM location — is available here.
+            # Internal target_url is normalized the same way Page.url is so
+            # site_audit.py::_detect_broken_internal_links()'s string match
+            # against crawled pages keeps working; external/special links
+            # aren't matched against anything, so they're stored as resolved.
+            for link in (audit.get("internal_links") or {}).get("links", []):
+                db.add(
+                    Link(
+                        page_id=page.id,
+                        target_url=normalize_url(link["url"]),
+                        link_type="internal",
+                        dom_location=link.get("location"),
+                        anchor_text=link.get("anchor_text"),
+                        is_nofollow=link.get("is_nofollow", False),
+                        is_dofollow=link.get("is_dofollow", True),
+                    )
+                )
+            for link in (audit.get("external_links") or {}).get("links", []):
+                db.add(
+                    Link(
+                        page_id=page.id,
+                        target_url=link["url"],
+                        link_type="external",
+                        dom_location=link.get("location"),
+                        anchor_text=link.get("anchor_text"),
+                        is_nofollow=link.get("is_nofollow", False),
+                        is_dofollow=link.get("is_dofollow", True),
+                    )
+                )
+            for kind, items in (audit.get("special_links") or {}).items():
+                for item in items:
+                    db.add(
+                        Link(
+                            page_id=page.id,
+                            target_url=item["href"],
+                            link_type=kind,
+                            dom_location=item.get("location"),
+                            anchor_text=item.get("anchor_text"),
+                        )
+                    )
 
             for issue in audit.get("all_issues", []):
                 original_severity = issue.get("severity", "Low")

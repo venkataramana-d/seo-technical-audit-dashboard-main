@@ -78,9 +78,12 @@ class CrawlConfig:
             raise ValueError("max_pages must be >= 1")
 
 
-def _normalize_url(url: str) -> str:
+def normalize_url(url: str) -> str:
     """Strip fragments and normalize trailing slashes so the same page isn't
-    queued twice under two different-looking URLs."""
+    queued twice under two different-looking URLs. Also used by
+    worker/crawl_service.py to normalize internal Link.target_url the same
+    way Page.url is normalized, so site_audit.py's broken-link matcher keeps
+    working on link targets sourced from modules/link_auditor.py."""
     url, _fragment = urldefrag(url)
     parsed = urlparse(url)
     path = parsed.path or "/"
@@ -115,7 +118,7 @@ def _extract_internal_links(soup, base_url: str, seed_domain: str, config: Crawl
         href = tag["href"].strip()
         if not href or href.startswith(("#", "mailto:", "tel:", "javascript:", "data:")):
             continue
-        full_url = _normalize_url(urljoin(base_url, href))
+        full_url = normalize_url(urljoin(base_url, href))
         if _in_scope(full_url, seed_domain, config):
             links.add(full_url)
     return links
@@ -236,7 +239,7 @@ def crawl_site(config: CrawlConfig, progress_callback=None, on_result=None) -> d
     seed_domain = get_base_domain(config.seed_url)
     headers = {**DEFAULT_HEADERS, "User-Agent": USER_AGENTS[config.user_agent]}
 
-    seeds = [_normalize_url(u) for u in _get_seed_urls(config)]
+    seeds = [normalize_url(u) for u in _get_seed_urls(config)]
     frontier, skipped_scope = [], []
     for u in seeds:
         (frontier if _in_scope(u, seed_domain, config) else skipped_scope).append(u)
@@ -294,12 +297,12 @@ def crawl_site(config: CrawlConfig, progress_callback=None, on_result=None) -> d
             "blocked_by_robots": not allowed,  # only meaningful when robots_mode == "ignore_but_report"
         }
         if config.run_full_audit:
-            page_record["audit"] = audit_url(url, check_links=False, prefetched=fetch)
+            page_record["audit"] = audit_url(url, check_links=True, prefetched=fetch)
 
             if render_pool is not None:
                 rendered = render_pool.submit(render_page, url, config.render_timeout_ms).result()
                 if rendered.get("success"):
-                    rendered_audit = audit_url(url, check_links=False, prefetched=rendered)
+                    rendered_audit = audit_url(url, check_links=True, prefetched=rendered)
                     raw_words = (page_record["audit"].get("content") or {}).get("word_count", 0)
                     rendered_words = (rendered_audit.get("content") or {}).get("word_count", 0)
                     page_record["audit"] = rendered_audit

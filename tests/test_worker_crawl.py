@@ -31,6 +31,38 @@ def _fake_crawl_site_success(config, on_result=None, progress_callback=None):
                     "seo_score": 88.0,
                     "metadata": {"title": "Home", "description": "Homepage desc"},
                     "headings": {"h1_texts": ["Welcome"]},
+                    # "https://example.com/about/" (trailing slash) exercises
+                    # persist_result()'s normalize_url() call — should land in
+                    # the DB as "https://example.com/about", matching the
+                    # about page's own (already-normalized) Page.url below.
+                    "internal_links": {
+                        "links": [
+                            {
+                                "url": "https://example.com/about/",
+                                "anchor_text": "About",
+                                "location": "nav",
+                                "is_nofollow": False,
+                                "is_dofollow": True,
+                            },
+                        ],
+                    },
+                    "external_links": {
+                        "links": [
+                            {
+                                "url": "https://external.example/",
+                                "anchor_text": "Visit",
+                                "location": "body",
+                                "is_nofollow": True,
+                                "is_dofollow": False,
+                            },
+                        ],
+                    },
+                    "special_links": {
+                        "mailto": [
+                            {"href": "mailto:test@example.com", "anchor_text": "Email us", "location": "footer"},
+                        ],
+                        "tel": [], "anchor": [], "javascript": [],
+                    },
                     "all_issues": [
                         {
                             "issue": "Missing alt text", "category": "Images", "severity": "Low",
@@ -39,7 +71,6 @@ def _fake_crawl_site_success(config, on_result=None, progress_callback=None):
                     ],
                 },
             },
-            "links": {"https://example.com/about"},
         },
         "https://example.com/about": {
             "page": {
@@ -57,7 +88,6 @@ def _fake_crawl_site_success(config, on_result=None, progress_callback=None):
                     ],
                 },
             },
-            "links": set(),
         },
     }
     for url, outcome in outcomes.items():
@@ -115,9 +145,25 @@ def test_handle_crawl_start_persists_pages_links_issues_and_scores(monkeypatch, 
         assert home.seo_score == 88.0
 
         links = db.execute(select(Link)).scalars().all()
-        assert len(links) == 1
-        assert links[0].target_url == "https://example.com/about"
-        assert links[0].link_type == "internal"
+        assert len(links) == 3  # 1 internal + 1 external + 1 mailto
+
+        internal = next(l for l in links if l.link_type == "internal")
+        assert internal.target_url == "https://example.com/about"  # normalized: trailing slash stripped
+        assert internal.anchor_text == "About"
+        assert internal.dom_location == "nav"
+        assert internal.is_nofollow is False
+        assert internal.is_dofollow is True
+
+        external = next(l for l in links if l.link_type == "external")
+        assert external.target_url == "https://external.example/"  # NOT normalized
+        assert external.anchor_text == "Visit"
+        assert external.is_nofollow is True
+        assert external.is_dofollow is False
+
+        mailto = next(l for l in links if l.link_type == "mailto")
+        assert mailto.target_url == "mailto:test@example.com"
+        assert mailto.anchor_text == "Email us"
+        assert mailto.dom_location == "footer"
 
         issues = db.execute(select(Issue).where(Issue.crawl_id == crawl_id)).scalars().all()
         assert len(issues) == 2

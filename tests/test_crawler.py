@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from bs4 import BeautifulSoup
 
-from modules.crawler import CrawlConfig, _in_scope, _normalize_url, crawl_site
+from modules.crawler import CrawlConfig, _in_scope, crawl_site, normalize_url
 
 
 def _soup_with_links(*hrefs):
@@ -45,8 +45,8 @@ def _allow_all_robots_get(*args, **kwargs):
 # ── pure helpers ───────────────────────────────────────────────────────────────
 
 def test_normalize_url_strips_fragment_and_trailing_slash():
-    assert _normalize_url("https://example.com/about/#section") == "https://example.com/about"
-    assert _normalize_url("https://example.com/") == "https://example.com/"
+    assert normalize_url("https://example.com/about/#section") == "https://example.com/about"
+    assert normalize_url("https://example.com/") == "https://example.com/"
 
 
 def test_in_scope_rejects_other_domains_by_default():
@@ -102,6 +102,24 @@ def test_crawl_discovers_linked_pages_within_domain(mock_fetch, mock_robots_get,
     assert crawled_urls == set(pages.keys())
     assert result["stats"]["pages_crawled"] == 3
     assert result["stats"]["errors"] == 0
+
+
+@patch("modules.crawler.audit_url", side_effect=_stub_audit_url)
+@patch("modules.crawler.requests.get", side_effect=_allow_all_robots_get)
+@patch("modules.crawler.fetch_page")
+def test_crawl_calls_audit_url_with_check_links_true(mock_fetch, mock_robots_get, mock_audit):
+    """check_links=True unlocks the rich per-page link audit (anchor text,
+    nofollow, DOM location) that worker/crawl_service.py now persists — see
+    modules/link_auditor.py. This is pure DOM parsing (no extra HTTP
+    requests), so it's always on rather than gated by a config flag."""
+    mock_fetch.side_effect = lambda url: _fetch_result(url, _soup_with_links())
+
+    config = CrawlConfig(seed_url="https://example.com/", max_pages=1, max_depth=0)
+    crawl_site(config)
+
+    assert mock_audit.call_count >= 1
+    for call in mock_audit.call_args_list:
+        assert call.kwargs.get("check_links") is True
 
 
 @patch("modules.crawler.audit_url", side_effect=_stub_audit_url)
