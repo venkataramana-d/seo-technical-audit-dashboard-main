@@ -22,12 +22,15 @@ MAX_PATTERN_LENGTH = 200
 # invocation (production AND preview) -- these api/*.py handlers never run
 # anywhere else (plain `next dev` 404s on API calls, see agents.md), so this
 # is effectively always the "prod" branch in real usage; the local branch only
-# matters for direct pytest/module calls that don't set VERCEL. Raised past
-# 200 previously (up to 4000) drove real Vercel CPU-usage overage: each URL in
-# a bulk audit fans out to its own per-URL invocation with several
-# ThreadPoolExecutor-backed site-health checks (WHOIS/DNS/SSL/etc.), so a
-# 4000-URL crawl could spin up thousands of concurrent invocations.
-BULK_URL_CAP_PROD = 200
+# matters for direct pytest/module calls that don't set VERCEL.
+#
+# NOTE: this was previously dialed back from 4000 to 200 after a real Vercel
+# CPU-usage overage incident -- each URL in a bulk audit fans out to its own
+# per-URL invocation with several ThreadPoolExecutor-backed site-health checks
+# (WHOIS/DNS/SSL/etc.), so a large bulk audit spins up that many concurrent
+# invocations. Raised back to 5000 per explicit request; if cost/usage becomes
+# a problem again, this is the constant to dial back down.
+BULK_URL_CAP_PROD = 5000
 BULK_URL_CAP_LOCAL = 5000
 
 

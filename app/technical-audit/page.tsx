@@ -24,16 +24,12 @@ import { CheckSelector } from "@/components/CheckSelector";
 type InputMode = "single" | "sitemap" | "list" | "crawl";
 
 const DEFAULT_LIMIT = 50;
-// Matches the backend's bulk-audit cap (modules/_http.py::bulk_url_cap):
-// 200 in a real deployment (production or preview — Vercel sets VERCEL=1
-// for both at build time, see next.config.ts), 5000 in local dev so the
-// client-side parsing/orchestration logic can still be exercised with a
-// large list even though there's no live backend to actually audit it
-// against (plain `next dev` 404s on API calls). Every bulk mode (sitemap,
-// crawl, CSV/paste) shares this same cap; a bare number input used to be
-// the only place this was surfaced, so a clear line above each URL input
-// now states it too (see BulkLimitNote below).
-const MAX_LIMIT = Number(process.env.NEXT_PUBLIC_BULK_URL_LIMIT) || 200;
+// Matches the backend's bulk-audit cap (modules/_http.py::bulk_url_cap) —
+// 5000 everywhere (production, preview, and local dev). Every bulk mode
+// (sitemap, crawl, CSV/paste) shares this same cap; a bare number input used
+// to be the only place this was surfaced, so a clear line above each URL
+// input now states it too (see BulkLimitNote below).
+const MAX_LIMIT = Number(process.env.NEXT_PUBLIC_BULK_URL_LIMIT) || 5000;
 const CRAWL_MAX_LIMIT = MAX_LIMIT;
 
 type ModeIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: number }>;
