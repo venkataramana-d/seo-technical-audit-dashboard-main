@@ -320,7 +320,7 @@ export default function TechnicalAuditPage() {
     "w-full rounded-lg border border-[var(--seo-border-strong)] bg-[var(--seo-card-bg)] px-3 py-2 text-sm text-[var(--seo-text)] outline-none focus:border-[var(--seo-accent)]";
 
   return (
-    <div className="mx-auto max-w-4xl">
+    <div>
       <PageHeader
         icon={<ScanIcon size={18} />}
         title="Technical Audit"
