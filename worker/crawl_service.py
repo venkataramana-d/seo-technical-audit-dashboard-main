@@ -82,6 +82,7 @@ def create_crawl(
     max_workers: int = 4,
     run_full_audit: bool = True,
     render_js: bool = False,
+    render_timeout_ms: int = 5000,
     requests_per_second: float = 1.0,
     max_duration_minutes: int = 60,
     schedule_cron: str | None = None,
@@ -105,6 +106,7 @@ def create_crawl(
         "url_list": url_list or [],
         "crawl_delay": crawl_delay,
         "run_full_audit": run_full_audit,
+        "render_timeout_ms": render_timeout_ms,
     }
     crawl_config = CrawlConfig(
         project_id=project.id,
@@ -154,6 +156,8 @@ def build_module_crawl_config(project: Project, crawl_config: CrawlConfig) -> Mo
         crawl_delay=scope.get("crawl_delay", 0.0),
         max_workers=crawl_config.concurrency,
         run_full_audit=scope.get("run_full_audit", True),
+        render_js=crawl_config.render_js,
+        render_timeout_ms=scope.get("render_timeout_ms", 5000),
     )
 
 

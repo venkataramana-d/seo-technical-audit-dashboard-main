@@ -15,7 +15,8 @@ are designed to swap to the real thing later via `DATABASE_URL` alone — see
 ## Run it locally
 
 ```bash
-pip install -r requirements.txt   # adds sqlalchemy + alembic
+pip install -r requirements.txt   # adds sqlalchemy + alembic + playwright, etc.
+playwright install chromium       # one-time: downloads the browser Playwright drives (~300MB)
 python -m alembic upgrade head    # creates worker/dev.db with all tables
 python -m worker                  # starts the polling worker (Ctrl+C to stop)
 ```

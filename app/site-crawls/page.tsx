@@ -54,6 +54,7 @@ export default function SiteCrawlsPage() {
   const [maxPages, setMaxPages] = useState(50);
   const [maxDepth, setMaxDepth] = useState(3);
   const [robotsMode, setRobotsMode] = useState("respect");
+  const [renderJs, setRenderJs] = useState(false);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
 
@@ -82,6 +83,7 @@ export default function SiteCrawlsPage() {
         maxPages,
         maxDepth,
         robotsMode,
+        renderJs,
       });
       router.push(`/site-crawls/${data.crawlId}`);
     } catch (err) {
@@ -143,10 +145,19 @@ export default function SiteCrawlsPage() {
             {starting ? "Starting…" : "Start Crawl"}
           </button>
         </div>
+        <label className="mt-3 flex items-center gap-2 text-sm text-[var(--seo-text)]">
+          <input
+            type="checkbox"
+            checked={renderJs}
+            onChange={(e) => setRenderJs(e.target.checked)}
+            className="h-4 w-4 accent-[var(--seo-accent)]"
+          />
+          Render JavaScript (slower — for SPAs/client-rendered sites)
+        </label>
         <p className="mt-2 text-xs text-[var(--seo-muted)]">
           Max pages / depth (0 = homepage only). Crawls run in the background — the worker process
           (<code className="font-mono">python -m worker</code>) must be running for a queued crawl
-          to progress.
+          to progress. Rendering uses a real browser per page and is much slower than a raw fetch.
         </p>
         {startError ? <p className="mt-2 text-xs text-[var(--seo-error)]">{startError}</p> : null}
       </Card>

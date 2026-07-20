@@ -27,6 +27,7 @@ import requests
 
 from modules.auditor import HEADERS as DEFAULT_HEADERS, TIMEOUT, audit_url, fetch_page, safe_get, validate_audit_url
 from modules.link_auditor import get_base_domain
+from modules.renderer import render_page
 
 # ── User-agent presets (mirrors Semrush/Screaming Frog's UA switcher) ─────────
 USER_AGENTS = {
@@ -61,6 +62,8 @@ class CrawlConfig:
     crawl_delay: float = 0.0                     # min seconds between requests to the same host
     max_workers: int = 4
     run_full_audit: bool = True                  # False = discovery + status only, no per-page SEO checks
+    render_js: bool = False                       # Phase 4: audit the Playwright-rendered DOM instead of raw HTML
+    render_timeout_ms: int = 5000                 # per-page render timeout (Screaming Frog's own default)
 
     def __post_init__(self):
         if self.seed_source not in SEED_SOURCES:
@@ -248,6 +251,13 @@ def crawl_site(config: CrawlConfig, progress_callback=None, on_result=None) -> d
     last_request: dict = {}
     throttle_lock = threading.Lock()
 
+    # Phase 4: a small, separate pool for JS rendering — never the main BFS
+    # pool (config.max_workers, sized for cheap raw HTTP fetches). Capped at
+    # 2 regardless of max_workers, per 01-CRAWLER-ENGINE.md's explicit
+    # "2 render workers vs. 20 fetch workers" guidance, since each render is
+    # a real Chromium launch (10-50x slower/heavier than a raw GET).
+    render_pool = ThreadPoolExecutor(max_workers=2) if config.render_js else None
+
     def _throttle(url: str, robots_delay):
         host = urlparse(url).netloc
         delay = max(config.crawl_delay, robots_delay or 0)
@@ -285,47 +295,76 @@ def crawl_site(config: CrawlConfig, progress_callback=None, on_result=None) -> d
         }
         if config.run_full_audit:
             page_record["audit"] = audit_url(url, check_links=False, prefetched=fetch)
+
+            if render_pool is not None:
+                rendered = render_pool.submit(render_page, url, config.render_timeout_ms).result()
+                if rendered.get("success"):
+                    rendered_audit = audit_url(url, check_links=False, prefetched=rendered)
+                    raw_words = (page_record["audit"].get("content") or {}).get("word_count", 0)
+                    rendered_words = (rendered_audit.get("content") or {}).get("word_count", 0)
+                    page_record["audit"] = rendered_audit
+                    page_record["rendered"] = True
+                    # A large raw-vs-rendered content gap means crawlers/tools
+                    # that don't execute JS will miss real content — the same
+                    # signal Screaming Frog's own rendered mode flags.
+                    if rendered_words > raw_words * 1.5 and (rendered_words - raw_words) >= 50:
+                        rendered_audit.setdefault("all_issues", []).append({
+                            "issue": "Significant JS-dependent content",
+                            "category": "Technical",
+                            "severity": "Warning",
+                            "recommendation": (
+                                f"Rendered content has {rendered_words} words vs {raw_words} in the raw HTML. "
+                                "Crawlers/tools that don't execute JavaScript will miss this content — consider "
+                                "server-side rendering or static generation for anything SEO-critical."
+                            ),
+                            "impact_score": 6,
+                            "effort": "High",
+                        })
         return {"page": page_record, "links": links}
 
-    depth = 0
-    while frontier and len(visited) < config.max_pages and depth <= config.max_depth:
-        remaining = config.max_pages - len(visited)
-        batch = [u for u in frontier if u not in visited][:remaining]
-        frontier = []
-        if not batch:
-            break
+    try:
+        depth = 0
+        while frontier and len(visited) < config.max_pages and depth <= config.max_depth:
+            remaining = config.max_pages - len(visited)
+            batch = [u for u in frontier if u not in visited][:remaining]
+            frontier = []
+            if not batch:
+                break
 
-        with ThreadPoolExecutor(max_workers=config.max_workers) as executor:
-            future_map = {executor.submit(_process, u): u for u in batch}
-            for future in as_completed(future_map):
-                url = future_map[future]
-                visited.add(url)
-                try:
-                    outcome = future.result()
-                except Exception as exc:
-                    outcome = {"error": str(exc), "url": url}
-                    errors.append({"url": url, "error": str(exc)})
+            with ThreadPoolExecutor(max_workers=config.max_workers) as executor:
+                future_map = {executor.submit(_process, u): u for u in batch}
+                for future in as_completed(future_map):
+                    url = future_map[future]
+                    visited.add(url)
+                    try:
+                        outcome = future.result()
+                    except Exception as exc:
+                        outcome = {"error": str(exc), "url": url}
+                        errors.append({"url": url, "error": str(exc)})
+                        if on_result:
+                            on_result(url, outcome)
+                        continue
+
+                    if outcome.get("skipped") == "robots":
+                        skipped_robots.append(url)
+                    elif "error" in outcome:
+                        errors.append({"url": url, "error": outcome["error"]})
+                    else:
+                        pages.append(outcome["page"])
+                        for link in outcome["links"]:
+                            if link not in visited:
+                                frontier.append(link)
+
                     if on_result:
                         on_result(url, outcome)
-                    continue
+                    if progress_callback:
+                        progress_callback(len(pages), config.max_pages)
 
-                if outcome.get("skipped") == "robots":
-                    skipped_robots.append(url)
-                elif "error" in outcome:
-                    errors.append({"url": url, "error": outcome["error"]})
-                else:
-                    pages.append(outcome["page"])
-                    for link in outcome["links"]:
-                        if link not in visited:
-                            frontier.append(link)
-
-                if on_result:
-                    on_result(url, outcome)
-                if progress_callback:
-                    progress_callback(len(pages), config.max_pages)
-
-        frontier = list(dict.fromkeys(frontier))
-        depth += 1
+            frontier = list(dict.fromkeys(frontier))
+            depth += 1
+    finally:
+        if render_pool is not None:
+            render_pool.shutdown(wait=True)
 
     finished = datetime.now()
     return {

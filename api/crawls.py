@@ -80,9 +80,13 @@ def _handle_create(handler, payload):
         max_pages = min(int(payload.get("maxPages", 50) or 50), bulk_url_cap())
         max_depth = max(0, int(payload.get("maxDepth", 3) or 3))
         robots_mode = payload.get("robotsMode") or "respect"
+        render_js = bool(payload.get("renderJs", False))
 
         with SessionLocal() as db:
-            crawl = create_crawl(db, root_url, max_pages=max_pages, max_depth=max_depth, robots_mode=robots_mode)
+            crawl = create_crawl(
+                db, root_url, max_pages=max_pages, max_depth=max_depth,
+                robots_mode=robots_mode, render_js=render_js,
+            )
             crawl_id = crawl.id
 
         enqueue("crawl.start", {"crawl_id": crawl_id})

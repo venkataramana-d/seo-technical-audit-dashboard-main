@@ -247,6 +247,84 @@ def test_discovery_only_mode_skips_per_page_audit(mock_fetch, mock_robots_get, m
     mock_audit.assert_not_called()
 
 
+# ── render_js (Phase 4) ────────────────────────────────────────────────────
+
+def _audit_stub_by_render_flag(raw_words, rendered_words):
+    """Returns a fake audit_url whose reported word_count depends on whether
+    it was called with the (mocked) rendered prefetch vs. the raw one —
+    lets tests control the raw-vs-rendered content gap precisely."""
+
+    def _stub(url, check_links=True, prefetched=None, **kwargs):
+        is_rendered = bool(prefetched and prefetched.get("_rendered"))
+        words = rendered_words if is_rendered else raw_words
+        return {"url": url, "seo_score": 90, "all_issues": [], "content": {"word_count": words}}
+
+    return _stub
+
+
+@patch("modules.crawler.render_page")
+@patch("modules.crawler.audit_url", side_effect=_stub_audit_url)
+@patch("modules.crawler.requests.get", side_effect=_allow_all_robots_get)
+@patch("modules.crawler.fetch_page")
+def test_render_js_disabled_never_calls_render_page(mock_fetch, mock_robots_get, mock_audit, mock_render):
+    mock_fetch.side_effect = lambda url: _fetch_result(url, _soup_with_links())
+    config = CrawlConfig(seed_url="https://example.com/", max_pages=1, render_js=False)
+
+    crawl_site(config)
+
+    mock_render.assert_not_called()
+
+
+@patch("modules.crawler.render_page")
+@patch("modules.crawler.audit_url")
+@patch("modules.crawler.requests.get", side_effect=_allow_all_robots_get)
+@patch("modules.crawler.fetch_page")
+def test_render_js_enabled_reaudits_with_rendered_content_and_flags_gap(mock_fetch, mock_robots_get, mock_audit, mock_render):
+    mock_fetch.side_effect = lambda url: _fetch_result(url, _soup_with_links())
+    mock_render.return_value = {"success": True, "_rendered": True}
+    mock_audit.side_effect = _audit_stub_by_render_flag(raw_words=10, rendered_words=500)
+
+    config = CrawlConfig(seed_url="https://example.com/", max_pages=1, render_js=True)
+    result = crawl_site(config)
+
+    mock_render.assert_called_once()
+    page = result["pages"][0]
+    assert page["rendered"] is True
+    assert page["audit"]["content"]["word_count"] == 500  # rendered audit replaced the raw one
+    assert any(i["issue"] == "Significant JS-dependent content" for i in page["audit"]["all_issues"])
+
+
+@patch("modules.crawler.render_page")
+@patch("modules.crawler.audit_url")
+@patch("modules.crawler.requests.get", side_effect=_allow_all_robots_get)
+@patch("modules.crawler.fetch_page")
+def test_render_js_small_content_gap_does_not_flag_issue(mock_fetch, mock_robots_get, mock_audit, mock_render):
+    mock_fetch.side_effect = lambda url: _fetch_result(url, _soup_with_links())
+    mock_render.return_value = {"success": True, "_rendered": True}
+    mock_audit.side_effect = _audit_stub_by_render_flag(raw_words=100, rendered_words=105)
+
+    config = CrawlConfig(seed_url="https://example.com/", max_pages=1, render_js=True)
+    result = crawl_site(config)
+
+    page = result["pages"][0]
+    assert not any(i["issue"] == "Significant JS-dependent content" for i in page["audit"]["all_issues"])
+
+
+@patch("modules.crawler.render_page")
+@patch("modules.crawler.audit_url", side_effect=_stub_audit_url)
+@patch("modules.crawler.requests.get", side_effect=_allow_all_robots_get)
+@patch("modules.crawler.fetch_page")
+def test_render_js_failed_render_falls_back_to_raw_audit(mock_fetch, mock_robots_get, mock_audit, mock_render):
+    mock_fetch.side_effect = lambda url: _fetch_result(url, _soup_with_links())
+    mock_render.return_value = {"success": False, "error": "render timed out"}
+
+    config = CrawlConfig(seed_url="https://example.com/", max_pages=1, render_js=True)
+    result = crawl_site(config)
+
+    page = result["pages"][0]
+    assert "rendered" not in page
+
+
 @pytest.mark.skipif(
     os.environ.get("RUN_LIVE_TESTS") != "1",
     reason="live network test: set RUN_LIVE_TESTS=1 to run",
