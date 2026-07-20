@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import type { ComponentType, SVGProps } from "react";
 import {
   GaugeIcon,
+  GlobeIcon,
   ListChecksIcon,
   ScanIcon,
   SearchIcon,
@@ -23,6 +24,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { href: "/", icon: GaugeIcon, label: "Dashboard" },
   { href: "/technical-audit", icon: ScanIcon, label: "New Audit" },
+  { href: "/site-crawls", icon: GlobeIcon, label: "Site Crawls" },
   { href: "/results", icon: ListChecksIcon, label: "Results" },
   { href: "/settings", icon: SettingsIcon, label: "Settings" },
 ];
@@ -30,7 +32,9 @@ const NAV_ITEMS: NavItem[] = [
 // The detail drill-down (/detail) belongs to the Results section; keep it lit
 // while drilling into a single page's Links / Headings / Performance tabs.
 function resolveActiveHref(pathname: string): string {
-  return pathname === "/detail" ? "/results" : pathname;
+  if (pathname === "/detail") return "/results";
+  if (pathname.startsWith("/site-crawls")) return "/site-crawls";
+  return pathname;
 }
 
 /**

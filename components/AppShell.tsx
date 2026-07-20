@@ -19,6 +19,7 @@ const PAGE_TITLES: Record<string, string> = {
 };
 
 function pageTitle(pathname: string): string {
+  if (pathname.startsWith("/site-crawls")) return "Site Crawls";
   return PAGE_TITLES[pathname] ?? "Dashboard";
 }
 
