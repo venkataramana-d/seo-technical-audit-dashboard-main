@@ -5,11 +5,12 @@ autoincrement primary keys (not `UUID`) so the exact same models run
 unchanged against local SQLite (dev) and Postgres (production) — swapping
 `DATABASE_URL` in `worker/db/session.py` is the only change needed later.
 
-Table shapes follow `03-DATA-MODEL-AND-API.md` from the rebuild plan, with
-Phase-5-only tables (`api_keys`, `schedules`, `alert_rules`) deferred to the
-phase that actually uses them. `users`/`organizations`/`memberships` exist so
-foreign keys resolve, but there is no login flow yet — see the Phase 0 plan's
-scope note.
+Table shapes follow `03-DATA-MODEL-AND-API.md` from the rebuild plan.
+`schedules`/`alert_rules` stay deferred (Phase 3 folded scheduling into
+`CrawlConfig` instead — see `worker/scheduler.py`); `api_keys` was added in
+Phase 5 (`worker/vault.py`/`worker/api_key_service.py`). `users`/
+`organizations`/`memberships` exist so foreign keys resolve, but there is no
+login flow yet — see the Phase 0 plan's scope note.
 """
 
 from __future__ import annotations
@@ -229,3 +230,24 @@ class Job(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Credential vault (Phase 5) — worker/vault.py encrypts, worker/api_key_service.py owns access
+# ---------------------------------------------------------------------------
+
+
+class ApiKey(Base):
+    """One encrypted provider credential per (org, provider). `encrypted_value`
+    is a Fernet token (see worker/vault.py) — never stored or returned as
+    plaintext; only worker/api_key_service.py::get_api_key() decrypts it, for
+    server-side use only."""
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)  # psi|groq|gsc|ga4|openai|anthropic|gemini
+    encrypted_value: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)

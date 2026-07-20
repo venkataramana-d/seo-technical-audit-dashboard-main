@@ -16,6 +16,7 @@ from modules.sitemap_extractor import (  # noqa: E402
     extract_sitemap_urls,
 )
 from modules.technical_checks import analyze_domain_health  # noqa: E402
+from worker.api_key_service import get_default_org_vaulted_key  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,13 @@ def _handle_audit(handler, payload):
         check_links = bool(payload.get("checkLinks", True))
         validate_links = bool(payload.get("validateLinks", False))
         fetch_pagespeed_flag = bool(payload.get("fetchPagespeed", False))
-        psi_api_key = payload.get("psiApiKey") or os.environ.get("PSI_API_KEY")
+        # Precedence: a key pasted for this one request > a saved vault
+        # entry (Phase 5) > the server-wide env var.
+        psi_api_key = (
+            payload.get("psiApiKey")
+            or get_default_org_vaulted_key("psi")
+            or os.environ.get("PSI_API_KEY")
+        )
         # Optional: domain-level site-health computed once by the client
         # (via the "site-health" action) and reused, so a same-domain crawl
         # skips re-running WHOIS/DNS/SSL/robots/etc. per page.
@@ -188,7 +195,7 @@ def _handle_pagespeed(handler, payload):
             return
 
         strategy = payload.get("strategy", "mobile")
-        api_key = payload.get("apiKey") or os.environ.get("PSI_API_KEY")
+        api_key = payload.get("apiKey") or get_default_org_vaulted_key("psi") or os.environ.get("PSI_API_KEY")
 
         result = fetch_pagespeed(url, strategy=strategy, api_key=api_key)
         send_json(handler, 200, result)

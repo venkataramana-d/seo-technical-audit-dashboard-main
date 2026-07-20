@@ -1,11 +1,174 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAudit } from "@/lib/state/AuditContext";
 import { Card, PageHeader } from "@/components/ui";
 import { MoonIcon, SettingsIcon, SunIcon } from "@/components/icons";
 import { useTheme } from "@/lib/useTheme";
 import { useAiConfigStatus } from "@/lib/useAiConfigStatus";
+
+interface VaultKey {
+  provider: string;
+  createdAt: string;
+  maskedPreview: string;
+}
+
+const VAULT_PROVIDERS: { id: string; label: string; testable: boolean }[] = [
+  { id: "psi", label: "PageSpeed Insights", testable: true },
+  { id: "groq", label: "Groq (AI Summary)", testable: true },
+  { id: "gsc", label: "Google Search Console", testable: false },
+  { id: "ga4", label: "Google Analytics 4", testable: false },
+  { id: "openai", label: "OpenAI", testable: false },
+  { id: "anthropic", label: "Anthropic", testable: false },
+  { id: "gemini", label: "Gemini", testable: false },
+];
+
+async function postApiKeysAction<T>(body: Record<string, unknown>): Promise<T> {
+  const res = await fetch("/api/api-keys", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Request failed.");
+  return data as T;
+}
+
+function ApiKeyVaultCard() {
+  const [vaultKeys, setVaultKeys] = useState<VaultKey[] | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [busyProvider, setBusyProvider] = useState<string | null>(null);
+  const [testResults, setTestResults] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
+
+  async function loadKeys() {
+    try {
+      const res = await fetch("/api/api-keys");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load API keys.");
+      setVaultKeys(data.apiKeys);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load API keys.");
+    }
+  }
+
+  useEffect(() => {
+    loadKeys();
+  }, []);
+
+  async function save(provider: string) {
+    const value = (drafts[provider] || "").trim();
+    if (!value) return;
+    setBusyProvider(provider);
+    setError(null);
+    try {
+      await postApiKeysAction({ action: "set", provider, value });
+      setDrafts((d) => ({ ...d, [provider]: "" }));
+      await loadKeys();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save key.");
+    } finally {
+      setBusyProvider(null);
+    }
+  }
+
+  async function remove(provider: string) {
+    setBusyProvider(provider);
+    setError(null);
+    try {
+      await postApiKeysAction({ action: "delete", provider });
+      await loadKeys();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete key.");
+    } finally {
+      setBusyProvider(null);
+    }
+  }
+
+  async function test(provider: string) {
+    setBusyProvider(provider);
+    setTestResults((r) => ({ ...r, [provider]: "Testing…" }));
+    try {
+      const result = await postApiKeysAction<{ ok: boolean; error?: string }>({ action: "test", provider });
+      setTestResults((r) => ({ ...r, [provider]: result.ok ? "Connection OK" : result.error || "Failed" }));
+    } catch (err) {
+      setTestResults((r) => ({ ...r, [provider]: err instanceof Error ? err.message : "Failed" }));
+    } finally {
+      setBusyProvider(null);
+    }
+  }
+
+  const configuredByProvider = new Map((vaultKeys || []).map((k) => [k.provider, k]));
+
+  return (
+    <Card className="mb-4">
+      <h3 className="mb-2 text-sm font-semibold text-[var(--seo-subheading)]">API Key Vault</h3>
+      <p className="mb-3 text-sm text-[var(--seo-text-light)]">
+        Saved server-side, encrypted at rest — separate from the per-browser Groq key below
+        and the <code>PSI_API_KEY</code> environment variable. Used automatically wherever
+        those providers are already integrated (PSI, Groq), falling back to the env var if unset.
+      </p>
+      {error ? <p className="mb-3 text-xs text-[var(--seo-error)]">{error}</p> : null}
+      <div className="flex flex-col gap-3">
+        {VAULT_PROVIDERS.map(({ id, label, testable }) => {
+          const configured = configuredByProvider.get(id);
+          const busy = busyProvider === id;
+          return (
+            <div key={id} className="rounded-lg border border-[var(--seo-border)] p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-sm font-medium text-[var(--seo-text)]">{label}</span>
+                <span className="text-xs text-[var(--seo-muted)]">
+                  {vaultKeys === null ? "Loading…" : configured ? configured.maskedPreview : "Not configured"}
+                </span>
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <input
+                  type="password"
+                  value={drafts[id] || ""}
+                  onChange={(e) => setDrafts((d) => ({ ...d, [id]: e.target.value }))}
+                  placeholder={configured ? "Enter a new value to replace it" : "Paste API key"}
+                  className="min-w-0 flex-1 rounded-lg border border-[var(--seo-border-strong)] bg-[var(--seo-card-bg)] px-2.5 py-1.5 text-sm text-[var(--seo-text)] outline-none focus:border-[var(--seo-accent)]"
+                />
+                <button
+                  type="button"
+                  onClick={() => save(id)}
+                  disabled={busy || !(drafts[id] || "").trim()}
+                  className="rounded-lg btn-gradient px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60"
+                >
+                  Save
+                </button>
+                {configured ? (
+                  <button
+                    type="button"
+                    onClick={() => remove(id)}
+                    disabled={busy}
+                    className="rounded-lg border border-[var(--seo-error-border)] px-3 py-1.5 text-xs font-medium text-[var(--seo-error)] hover:bg-[var(--seo-error-bg)] disabled:opacity-60"
+                  >
+                    Delete
+                  </button>
+                ) : null}
+                {testable && configured ? (
+                  <button
+                    type="button"
+                    onClick={() => test(id)}
+                    disabled={busy}
+                    className="rounded-lg border border-[var(--seo-border)] px-3 py-1.5 text-xs font-medium text-[var(--seo-text)] hover:bg-[var(--seo-card-hover)] disabled:opacity-60"
+                  >
+                    Test Connection
+                  </button>
+                ) : null}
+              </div>
+              {testResults[id] ? (
+                <p className="mt-1.5 text-xs text-[var(--seo-muted)]">{testResults[id]}</p>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
 
 export default function SettingsPage() {
   const { results, clearAll, groqApiKey, setGroqApiKey } = useAudit();
@@ -120,6 +283,8 @@ export default function SettingsPage() {
           summary endpoint, never saved server-side.
         </p>
       </Card>
+
+      <ApiKeyVaultCard />
 
       <Card>
         <h3 className="mb-2 text-sm font-semibold text-[var(--seo-subheading)]">

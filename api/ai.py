@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from modules._http import read_json_body, require_str, send_json  # noqa: E402
 from modules.ai_assist import explain_audit, suggest_fix  # noqa: E402
+from worker.api_key_service import get_default_org_vaulted_key  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,9 @@ def _handle_summary(handler, payload):
         # Optional: overrides the default "for {url}" phrasing, e.g. the
         # Results page's sitewide summary passes "across N audited pages".
         context_label = (payload.get("contextLabel") or "").strip() or None
-        api_key = payload.get("apiKey") or os.environ.get("GROQ_API_KEY")
+        # Precedence: a key pasted for this one request > a saved vault
+        # entry (Phase 5) > the server-wide env var.
+        api_key = payload.get("apiKey") or get_default_org_vaulted_key("groq") or os.environ.get("GROQ_API_KEY")
 
         summary = explain_audit(all_issues, seo_score, api_key, url=url, context_label=context_label)
         status = 200 if summary.get("ok") else 400
@@ -38,7 +41,9 @@ def _handle_fix_suggestion(handler, payload):
         page_context = payload.get("pageContext") or {}
         if not isinstance(page_context, dict):
             page_context = {}
-        api_key = payload.get("apiKey") or os.environ.get("GROQ_API_KEY")
+        # Precedence: a key pasted for this one request > a saved vault
+        # entry (Phase 5) > the server-wide env var.
+        api_key = payload.get("apiKey") or get_default_org_vaulted_key("groq") or os.environ.get("GROQ_API_KEY")
 
         result = suggest_fix(issue_title, page_context, api_key)
         status = 200 if result.get("ok") else 400
@@ -66,10 +71,11 @@ _ACTIONS = {
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         # Config-status is the one GET in this group (just reports whether
-        # server-side keys are set), so it doesn't need action dispatch.
+        # server-side keys are set — env var or vault), so it doesn't need
+        # action dispatch.
         send_json(self, 200, {
-            "psiConfigured": bool(os.environ.get("PSI_API_KEY")),
-            "groqConfigured": bool(os.environ.get("GROQ_API_KEY")),
+            "psiConfigured": bool(os.environ.get("PSI_API_KEY")) or bool(get_default_org_vaulted_key("psi")),
+            "groqConfigured": bool(os.environ.get("GROQ_API_KEY")) or bool(get_default_org_vaulted_key("groq")),
         })
 
     def do_POST(self):

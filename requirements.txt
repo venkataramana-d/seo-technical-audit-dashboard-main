@@ -18,3 +18,5 @@ croniter>=2.0
 # Phase 4 JS rendering (modules/renderer.py) — after installing, also run:
 #   playwright install chromium
 playwright>=1.40
+# Phase 5 API-key vault (worker/vault.py) — Fernet symmetric encryption
+cryptography>=42.0
