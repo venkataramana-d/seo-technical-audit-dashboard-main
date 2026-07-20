@@ -1,12 +1,12 @@
-"""First-slice frontend API for the crawler platform (Phases 0-3): start a
-crawl, watch it run, see its results. Same one-file/action-dispatch
+"""Frontend API for the crawler platform: start a crawl, watch it run, see
+its results, browse its pages and issues. Same one-file/action-dispatch
 convention as api/audit-pipeline.py — POST {"action": ..., ...} rather than
 REST verbs/path params.
 
-Deferred (not this file's job yet): paginated pages/issues tables, the
-links tab, site-structure graph, the compare/diff UI, schedule config, the
-API-key vault. Each is an incremental addition to this same dispatch table
-once the first slice (list/create/status/thematic/trend) is in place.
+Deferred (not this file's job yet): the links tab, site-structure graph,
+the compare/diff UI (worker/crawl_diff.py exists server-side but has no UI
+yet), schedule config. Each is an incremental addition to this same
+dispatch table.
 
 Talks straight to worker/*.py — same DB file the worker process reads/
 writes (worker/db/session.py resolves an absolute path), no separate
@@ -22,13 +22,17 @@ from http.server import BaseHTTPRequestHandler
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from modules._http import bulk_url_cap, read_json_body, require_str, send_json  # noqa: E402
-from sqlalchemy import select  # noqa: E402
+from sqlalchemy import func, select  # noqa: E402
 from worker.crawl_diff import get_score_trend  # noqa: E402
 from worker.crawl_service import create_crawl  # noqa: E402
-from worker.db.models import Crawl, Project  # noqa: E402
+from worker.db.models import Crawl, Issue, Page, Project  # noqa: E402
 from worker.db.session import SessionLocal  # noqa: E402
 from worker.queue import enqueue  # noqa: E402
 from worker.site_audit import get_thematic_report  # noqa: E402
+
+# Pagination bounds shared by the "pages" and "issues" listing actions.
+DEFAULT_PAGE_SIZE = 25
+MAX_PAGE_SIZE = 200
 
 logger = logging.getLogger(__name__)
 
@@ -141,12 +145,138 @@ def _handle_trend(handler, payload):
         send_json(handler, 500, {"error": "Internal error while building the score trend."})
 
 
+def _parse_pagination(payload) -> tuple[int, int]:
+    page_num = max(1, int(payload.get("page", 1) or 1))
+    page_size = min(max(1, int(payload.get("pageSize", DEFAULT_PAGE_SIZE) or DEFAULT_PAGE_SIZE)), MAX_PAGE_SIZE)
+    return page_num, page_size
+
+
+def _handle_pages(handler, payload):
+    try:
+        crawl_id = _parse_crawl_id(handler, payload)
+        if crawl_id is None:
+            return
+        page_num, page_size = _parse_pagination(payload)
+        search = (payload.get("search") or "").strip()
+
+        with SessionLocal() as db:
+            filters = [Page.crawl_id == crawl_id]
+            if search:
+                filters.append(Page.url.ilike(f"%{search}%"))
+
+            total = db.execute(select(func.count()).select_from(Page).where(*filters)).scalar_one()
+            rows = db.execute(
+                select(Page)
+                .where(*filters)
+                .order_by(Page.id.asc())
+                .offset((page_num - 1) * page_size)
+                .limit(page_size)
+            ).scalars().all()
+
+            # One aggregate query for this page's severity counts, not N+1
+            # per-row queries.
+            page_ids = [p.id for p in rows]
+            counts_by_page: dict[int, dict[str, int]] = {}
+            if page_ids:
+                severity_rows = db.execute(
+                    select(Issue.page_id, Issue.severity, func.count())
+                    .where(Issue.page_id.in_(page_ids))
+                    .group_by(Issue.page_id, Issue.severity)
+                ).all()
+                for pid, severity, count in severity_rows:
+                    counts_by_page.setdefault(pid, {})[severity] = count
+
+            pages_out = [
+                {
+                    "id": p.id,
+                    "url": p.url,
+                    "statusCode": p.status_code,
+                    "title": p.title,
+                    "seoScore": p.seo_score,
+                    "fetchedAt": p.fetched_at.isoformat() if p.fetched_at else None,
+                    "issueCounts": counts_by_page.get(p.id, {}),
+                }
+                for p in rows
+            ]
+
+        send_json(handler, 200, {"pages": pages_out, "total": total, "page": page_num, "pageSize": page_size})
+    except Exception:  # noqa: BLE001
+        logger.exception("crawls.py (pages) request failed")
+        send_json(handler, 500, {"error": "Internal error while listing pages."})
+
+
+def _handle_issues(handler, payload):
+    try:
+        crawl_id = _parse_crawl_id(handler, payload)
+        if crawl_id is None:
+            return
+        page_num, page_size = _parse_pagination(payload)
+        severity = (payload.get("severity") or "").strip() or None
+        category = (payload.get("category") or "").strip() or None
+        search = (payload.get("search") or "").strip()
+
+        with SessionLocal() as db:
+            filters = [Issue.crawl_id == crawl_id]
+            if severity:
+                filters.append(Issue.severity == severity)
+            if search:
+                filters.append(Issue.issue_type.ilike(f"%{search}%"))
+
+            # category lives inside explanation_json, not a column — SQL-level
+            # JSON-path filtering would be fragile/dialect-specific at this
+            # scale, so severity/search are filtered in SQL and category is
+            # filtered in Python below (matches worker/site_audit.py's own
+            # precedent for local-scale data).
+            rows = db.execute(
+                select(Issue, Page.url)
+                .outerjoin(Page, Issue.page_id == Page.id)
+                .where(*filters)
+                .order_by(Issue.id.asc())
+            ).all()
+
+            all_categories = sorted({(issue.explanation_json or {}).get("category", "Other") for issue, _ in rows})
+            if category:
+                rows = [(issue, url) for issue, url in rows if (issue.explanation_json or {}).get("category", "Other") == category]
+
+            total = len(rows)
+            start = (page_num - 1) * page_size
+            page_rows = rows[start:start + page_size]
+
+            issues_out = [
+                {
+                    "id": issue.id,
+                    "issueType": issue.issue_type,
+                    "severity": issue.severity,
+                    "category": (issue.explanation_json or {}).get("category", "Other"),
+                    "recommendation": (issue.explanation_json or {}).get("recommendation", ""),
+                    "impactScore": issue.impact_score,
+                    "effortLevel": issue.effort_level,
+                    "pageUrl": url,
+                    "createdAt": issue.created_at.isoformat() if issue.created_at else None,
+                }
+                for issue, url in page_rows
+            ]
+
+        send_json(handler, 200, {
+            "issues": issues_out,
+            "total": total,
+            "page": page_num,
+            "pageSize": page_size,
+            "categories": all_categories,
+        })
+    except Exception:  # noqa: BLE001
+        logger.exception("crawls.py (issues) request failed")
+        send_json(handler, 500, {"error": "Internal error while listing issues."})
+
+
 _ACTIONS = {
     "list": _handle_list,
     "create": _handle_create,
     "status": _handle_status,
     "thematic": _handle_thematic,
     "trend": _handle_trend,
+    "pages": _handle_pages,
+    "issues": _handle_issues,
 }
 
 

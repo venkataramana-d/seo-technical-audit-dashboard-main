@@ -15,7 +15,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from worker import crawl_diff, queue as queue_module, site_audit
-from worker.db.models import Base, Crawl, CrawlConfig, Job, Organization, Project
+from worker.db.models import Base, Crawl, CrawlConfig, Issue, Job, Organization, Page, Project
 
 
 def _load(name, relative_path):
@@ -79,8 +79,8 @@ def _seed_crawl(session_factory, *, status="completed", health_score=80.0, seo_s
         return crawl.id
 
 
-def test_all_five_actions_registered():
-    assert set(crawls._ACTIONS) == {"list", "create", "status", "thematic", "trend"}
+def test_all_actions_registered():
+    assert set(crawls._ACTIONS) == {"list", "create", "status", "thematic", "trend", "pages", "issues"}
 
 
 def test_unknown_action_returns_400():
@@ -163,8 +163,6 @@ def test_status_without_crawl_id_returns_400():
 def test_thematic_groups_issues_by_theme(isolated_db):
     crawl_id = _seed_crawl(isolated_db)
     with isolated_db() as db:
-        from worker.db.models import Issue
-
         db.add(Issue(crawl_id=crawl_id, page_id=None, issue_type="Duplicate title", severity="warning",
                       explanation_json={"category": "Metadata", "recommendation": "fix it"}))
         db.commit()
@@ -188,3 +186,149 @@ def test_trend_returns_project_history(isolated_db):
     assert status == 200
     assert len(body["trend"]) == 1
     assert body["trend"][0]["health_score"] == 60.0
+
+
+def _seed_page(session_factory, crawl_id, *, url, status_code=200, title=None, seo_score=None) -> int:
+    with session_factory() as db:
+        page = Page(crawl_id=crawl_id, url=url, normalized_url=url, status_code=status_code,
+                    title=title, seo_score=seo_score)
+        db.add(page)
+        db.commit()
+        return page.id
+
+
+def test_pages_returns_paginated_results_with_severity_counts(isolated_db):
+    crawl_id = _seed_crawl(isolated_db)
+    page_id = _seed_page(isolated_db, crawl_id, url="https://example.com/a", title="A", seo_score=80.0)
+    _seed_page(isolated_db, crawl_id, url="https://example.com/b", title="B", seo_score=90.0)
+    with isolated_db() as db:
+        db.add(Issue(crawl_id=crawl_id, page_id=page_id, issue_type="Missing alt text", severity="notice"))
+        db.add(Issue(crawl_id=crawl_id, page_id=page_id, issue_type="Missing canonical", severity="warning"))
+        db.commit()
+
+    h = _mock_handler({"action": "pages", "crawlId": crawl_id})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    assert body["total"] == 2
+    assert body["page"] == 1
+    page_a = next(p for p in body["pages"] if p["url"] == "https://example.com/a")
+    assert page_a["title"] == "A"
+    assert page_a["seoScore"] == 80.0
+    assert page_a["issueCounts"] == {"notice": 1, "warning": 1}
+    page_b = next(p for p in body["pages"] if p["url"] == "https://example.com/b")
+    assert page_b["issueCounts"] == {}
+
+
+def test_pages_search_filters_by_url_substring(isolated_db):
+    crawl_id = _seed_crawl(isolated_db)
+    _seed_page(isolated_db, crawl_id, url="https://example.com/blog/post-1")
+    _seed_page(isolated_db, crawl_id, url="https://example.com/about")
+
+    h = _mock_handler({"action": "pages", "crawlId": crawl_id, "search": "blog"})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    assert body["total"] == 1
+    assert body["pages"][0]["url"] == "https://example.com/blog/post-1"
+
+
+def test_pages_pagination_math(isolated_db):
+    crawl_id = _seed_crawl(isolated_db)
+    for i in range(5):
+        _seed_page(isolated_db, crawl_id, url=f"https://example.com/{i}")
+
+    h = _mock_handler({"action": "pages", "crawlId": crawl_id, "page": 2, "pageSize": 2})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    assert body["total"] == 5
+    assert body["page"] == 2
+    assert body["pageSize"] == 2
+    assert len(body["pages"]) == 2
+
+
+def _seed_issue(session_factory, crawl_id, *, page_id=None, issue_type, severity, category):
+    with session_factory() as db:
+        db.add(Issue(crawl_id=crawl_id, page_id=page_id, issue_type=issue_type, severity=severity,
+                      explanation_json={"category": category, "recommendation": f"Fix {issue_type}"}))
+        db.commit()
+
+
+def test_issues_filters_by_severity(isolated_db):
+    crawl_id = _seed_crawl(isolated_db)
+    _seed_issue(isolated_db, crawl_id, issue_type="A", severity="error", category="Content")
+    _seed_issue(isolated_db, crawl_id, issue_type="B", severity="warning", category="Content")
+
+    h = _mock_handler({"action": "issues", "crawlId": crawl_id, "severity": "error"})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    assert body["total"] == 1
+    assert body["issues"][0]["issueType"] == "A"
+
+
+def test_issues_filters_by_category(isolated_db):
+    crawl_id = _seed_crawl(isolated_db)
+    _seed_issue(isolated_db, crawl_id, issue_type="A", severity="warning", category="Metadata")
+    _seed_issue(isolated_db, crawl_id, issue_type="B", severity="warning", category="Content")
+
+    h = _mock_handler({"action": "issues", "crawlId": crawl_id, "category": "Content"})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    assert body["total"] == 1
+    assert body["issues"][0]["issueType"] == "B"
+    # categories list reflects everything available, not just the selected one
+    assert body["categories"] == ["Content", "Metadata"]
+
+
+def test_issues_search_filters_by_issue_type(isolated_db):
+    crawl_id = _seed_crawl(isolated_db)
+    _seed_issue(isolated_db, crawl_id, issue_type="Missing alt text", severity="notice", category="Images")
+    _seed_issue(isolated_db, crawl_id, issue_type="Missing canonical", severity="warning", category="Technical")
+
+    h = _mock_handler({"action": "issues", "crawlId": crawl_id, "search": "alt"})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    assert body["total"] == 1
+    assert body["issues"][0]["issueType"] == "Missing alt text"
+
+
+def test_issues_includes_page_url_or_null_for_sitewide(isolated_db):
+    crawl_id = _seed_crawl(isolated_db)
+    page_id = _seed_page(isolated_db, crawl_id, url="https://example.com/a")
+    _seed_issue(isolated_db, crawl_id, page_id=page_id, issue_type="Page issue", severity="warning", category="Content")
+    _seed_issue(isolated_db, crawl_id, page_id=None, issue_type="Sitewide issue", severity="warning", category="Content")
+
+    h = _mock_handler({"action": "issues", "crawlId": crawl_id})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    page_issue = next(i for i in body["issues"] if i["issueType"] == "Page issue")
+    sitewide_issue = next(i for i in body["issues"] if i["issueType"] == "Sitewide issue")
+    assert page_issue["pageUrl"] == "https://example.com/a"
+    assert sitewide_issue["pageUrl"] is None
+
+
+def test_issues_pagination_math(isolated_db):
+    crawl_id = _seed_crawl(isolated_db)
+    for i in range(5):
+        _seed_issue(isolated_db, crawl_id, issue_type=f"Issue {i}", severity="warning", category="Content")
+
+    h = _mock_handler({"action": "issues", "crawlId": crawl_id, "page": 2, "pageSize": 2})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    assert body["total"] == 5
+    assert body["page"] == 2
+    assert len(body["issues"]) == 2
