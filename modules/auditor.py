@@ -421,7 +421,13 @@ def analyze_indexability(soup, http_headers=None):
     }
 
 
-def analyze_url_structure(url, response_time=0.0):
+def analyze_url_structure(url, response_time=0.0, final_url=None):
+    """`url` drives the structural checks (length/case/query params) since
+    those are properties of the URL as discovered/linked and worth fixing at
+    the source regardless of where it redirects. The HTTPS check instead uses
+    `final_url` (defaults to `url` if not given) -- otherwise a URL that's
+    simply *linked* as http:// but correctly redirects to a fully-HTTPS site
+    gets a Critical "migrate to HTTPS" finding that's actively wrong."""
     issues = []
     parsed = urlparse(url)
     path   = parsed.path
@@ -443,7 +449,7 @@ def analyze_url_structure(url, response_time=0.0):
             "Use clean, parameter-free URLs where possible. Query strings can cause duplicate content and are harder to remember/share.",
             impact_score=4, effort="Medium"))
 
-    if parsed.scheme != "https":
+    if urlparse(final_url or url).scheme != "https":
         issues.append(_issue("Not Using HTTPS", "URL Structure", "Critical",
             "Migrate to HTTPS. Google uses HTTPS as a ranking signal and it's required for trust.",
             impact_score=9, effort="High"))
@@ -693,7 +699,7 @@ def audit_url(url, audit_type="auto", check_links=True, validate_links=False,
     result["headings"]     = analyze_headings(soup)   # kept for scoring compatibility
     result["canonical"]    = analyze_canonical(soup, url)
     result["indexability"] = analyze_indexability(soup, http_headers=fetch.get("http_headers", {}))
-    result["url_structure"] = analyze_url_structure(url, result["response_time"])
+    result["url_structure"] = analyze_url_structure(url, result["response_time"], final_url=result["final_url"])
     result["content"]      = analyze_content(soup, html=fetch.get("html", ""), base_url=url)
     result["images"]       = analyze_images(soup)     # kept for scoring compatibility
     result["redirect_analysis"] = analyze_redirect_chain(result["redirect_chain"])
@@ -745,9 +751,16 @@ def audit_url(url, audit_type="auto", check_links=True, validate_links=False,
     # Site-health checks: domain age, SSL, DNS/SPF/DMARC/MX, robots.txt,
     # sitemap.xml, readability, content freshness, canonical loops, www
     # redirect consistency, HTTP/2: run concurrently, independent of the page fetch above.
+    #
+    # Uses final_url (the actual destination after following redirects), not
+    # the originally-requested `url` -- a page queued as e.g. http://example.com
+    # that correctly redirects to https://example.com was otherwise flagged
+    # with a Critical "Page Not Served Over HTTPS" against its own working
+    # HTTPS setup, since check_ssl()/check_https_enforcement() just test
+    # whether the URL they're given starts with "https".
     from modules.technical_checks import analyze_site_health
     result["site_health"] = analyze_site_health(
-        url, soup=soup, http_headers=http_headers, page_text=result.get("_soup_text", ""),
+        result["final_url"], soup=soup, http_headers=http_headers, page_text=result.get("_soup_text", ""),
         prefetched_domain_health=prefetched_domain_health,
     )
 

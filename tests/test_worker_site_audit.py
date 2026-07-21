@@ -107,9 +107,14 @@ def test_detects_long_redirect_chain_and_loop(isolated_db):
             redirect_chain_json=["https://example.com/1", "https://example.com/2", "https://example.com/3"],
         ))
         db.add(Page(
+            # A genuine loop: the chain revisits a URL it already hit
+            # (.../loop -> .../x -> .../loop again), not just a plain
+            # single-hop redirect where chain[0] happens to be the page's
+            # own originally-requested URL (that's every redirected page,
+            # not a loop -- see the regression test below).
             crawl_id=crawl_id, url="https://example.com/loop", normalized_url="https://example.com/loop",
             status_code=200,
-            redirect_chain_json=["https://example.com/loop", "https://example.com/x"],
+            redirect_chain_json=["https://example.com/loop", "https://example.com/x", "https://example.com/loop"],
         ))
         db.commit()
 
@@ -127,6 +132,29 @@ def test_detects_long_redirect_chain_and_loop(isolated_db):
         assert loop_issue.severity == "error"
         chain_issue = next(i for i in issues if i.issue_type == "Long redirect chain")
         assert chain_issue.severity == "warning"
+
+
+def test_plain_single_hop_redirect_is_not_flagged_as_a_loop(isolated_db):
+    """Regression test: chain[0] is always the page's own originally-requested
+    URL (see fetch_page()'s redirect_history) -- an ordinary http -> https
+    redirect (or any single healthy hop) must not be misreported as a
+    "Redirect loop" error just because that URL trivially appears in its own
+    chain."""
+    crawl_id = _seed_crawl(isolated_db)
+    with isolated_db() as db:
+        db.add(Page(
+            crawl_id=crawl_id, url="http://example.com/", normalized_url="http://example.com/",
+            status_code=200,
+            redirect_chain_json=["http://example.com/", "https://example.com/"],
+        ))
+        db.commit()
+
+    site_audit.run_site_audit(crawl_id)
+
+    with isolated_db() as db:
+        issues = db.execute(select(Issue).where(Issue.crawl_id == crawl_id)).scalars().all()
+        redirect_issues = [i for i in issues if i.issue_type in ("Redirect loop", "Long redirect chain")]
+        assert redirect_issues == []
 
 
 def test_detects_broken_internal_link_and_backfills_link_row(isolated_db):

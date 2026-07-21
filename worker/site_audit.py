@@ -52,13 +52,21 @@ def _group_duplicates(db, crawl_id: int, column) -> dict:
 def _detect_redirect_issues(db, crawl_id: int) -> list[dict]:
     """Per scope decision in the Phase 2 plan: detects long chains (>2 hops)
     and self-loops from each page's own already-captured redirect hop list —
-    not a full graph spanning separately-crawled pages."""
+    not a full graph spanning separately-crawled pages.
+
+    `chain` (Page.redirect_chain_json, built from fetch_page()'s
+    redirect_history) always starts with the page's OWN originally-requested
+    URL as chain[0] -- that's simply hop zero, not evidence of a loop. A real
+    loop is a URL the chain revisits, i.e. a duplicate entry anywhere in the
+    list (len(set(chain)) < len(chain)); checking `url in chain` on top of
+    that was always true for any redirected page and mislabeled ordinary
+    single-hop redirects (e.g. http -> https) as "Redirect loop" errors."""
     rows = db.execute(select(Page.id, Page.url, Page.redirect_chain_json).where(Page.crawl_id == crawl_id)).all()
     findings = []
     for page_id, url, chain in rows:
         if not chain:
             continue
-        if url in chain or len(set(chain)) < len(chain):
+        if len(set(chain)) < len(chain):
             findings.append({"type": "loop", "page_id": page_id, "url": url, "chain": chain})
         elif len(chain) > 2:
             findings.append({"type": "long_chain", "page_id": page_id, "url": url, "chain": chain})

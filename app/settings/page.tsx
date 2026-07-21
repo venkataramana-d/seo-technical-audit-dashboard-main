@@ -171,7 +171,7 @@ function ApiKeyVaultCard() {
 }
 
 export default function SettingsPage() {
-  const { results, clearAll, groqApiKey, setGroqApiKey } = useAudit();
+  const { results, clearAll, groqApiKey, setGroqApiKey, profile, setProfile } = useAudit();
   const { dark, setDark } = useTheme();
   const { psiConfigured, groqConfigured } = useAiConfigStatus();
   const [confirmClear, setConfirmClear] = useState(false);
@@ -214,6 +214,48 @@ export default function SettingsPage() {
           <span className="ml-1 text-sm font-medium text-[var(--seo-text)]">
             {dark ? "Dark" : "Light"}
           </span>
+        </div>
+      </Card>
+
+      <Card className="mb-4">
+        <h3 className="mb-2 text-sm font-semibold text-[var(--seo-subheading)]">
+          Profile
+        </h3>
+        <p className="mb-3 text-sm text-[var(--seo-text-light)]">
+          Optional display info — this app doesn&apos;t have accounts or logins, so
+          it&apos;s just saved in this browser, the same way the Groq key below is.
+        </p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[var(--seo-muted)]">Name</label>
+            <input
+              type="text"
+              value={profile.name}
+              onChange={(e) => setProfile({ ...profile, name: e.target.value })}
+              placeholder="Your name"
+              className="w-full rounded-lg border border-[var(--seo-border-strong)] bg-[var(--seo-card-bg)] px-3 py-2 text-sm text-[var(--seo-text)] outline-none focus:border-[var(--seo-accent)]"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[var(--seo-muted)]">Email</label>
+            <input
+              type="email"
+              value={profile.email}
+              onChange={(e) => setProfile({ ...profile, email: e.target.value })}
+              placeholder="you@company.com"
+              className="w-full rounded-lg border border-[var(--seo-border-strong)] bg-[var(--seo-card-bg)] px-3 py-2 text-sm text-[var(--seo-text)] outline-none focus:border-[var(--seo-accent)]"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[var(--seo-muted)]">Organization</label>
+            <input
+              type="text"
+              value={profile.organization}
+              onChange={(e) => setProfile({ ...profile, organization: e.target.value })}
+              placeholder="Company name"
+              className="w-full rounded-lg border border-[var(--seo-border-strong)] bg-[var(--seo-card-bg)] px-3 py-2 text-sm text-[var(--seo-text)] outline-none focus:border-[var(--seo-accent)]"
+            />
+          </div>
         </div>
       </Card>
 

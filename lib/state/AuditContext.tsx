@@ -23,6 +23,14 @@ const LEGACY_LOCALSTORAGE_KEY = STORAGE_KEY;
 // losing everything or crashing the app.
 const MAX_STORED_RESULTS = 500;
 
+export interface Profile {
+  name: string;
+  email: string;
+  organization: string;
+}
+
+const EMPTY_PROFILE: Profile = { name: "", email: "", organization: "" };
+
 interface PersistedState {
   results: AuditResult[];
   lastAuditDate: string | null;
@@ -31,6 +39,10 @@ interface PersistedState {
   // reopening an unchanged result's AI Summary doesn't re-spend an API call;
   // see lib/aiSummaryCache.ts::fingerprintForSummary for invalidation.
   aiSummaryCache: Record<string, AiSummaryCacheEntry>;
+  // There's no login/auth system in this app (see agents.md) -- this is
+  // just display info the user can optionally fill in, stored the same way
+  // as everything else here (per-browser, IndexedDB), not a real account.
+  profile: Profile;
 }
 
 interface AuditContextValue {
@@ -41,12 +53,14 @@ interface AuditContextValue {
   groqApiKey: string;
   storageWarning: string | null;
   aiSummaryCache: Record<string, AiSummaryCacheEntry>;
+  profile: Profile;
   addResult: (result: AuditResult) => void;
   addResults: (results: AuditResult[]) => void;
   setSelectedUrlIndex: (index: number) => void;
   setNavFilter: (filter: NavFilter | null) => void;
   setGroqApiKey: (key: string) => void;
   setCachedAiSummary: (key: string, entry: AiSummaryCacheEntry) => void;
+  setProfile: (profile: Profile) => void;
   clearAll: () => void;
 }
 
@@ -59,6 +73,11 @@ function normalizePersisted(parsed: unknown): PersistedState {
     lastAuditDate: p.lastAuditDate ?? null,
     groqApiKey: typeof p.groqApiKey === "string" ? p.groqApiKey : "",
     aiSummaryCache: p.aiSummaryCache && typeof p.aiSummaryCache === "object" ? p.aiSummaryCache : {},
+    profile: {
+      name: typeof p.profile?.name === "string" ? p.profile.name : "",
+      email: typeof p.profile?.email === "string" ? p.profile.email : "",
+      organization: typeof p.profile?.organization === "string" ? p.profile.organization : "",
+    },
   };
 }
 
@@ -92,6 +111,7 @@ export function AuditProvider({ children }: { children: ReactNode }) {
   const [navFilter, setNavFilter] = useState<NavFilter | null>(null);
   const [groqApiKey, setGroqApiKey] = useState("");
   const [aiSummaryCache, setAiSummaryCache] = useState<Record<string, AiSummaryCacheEntry>>({});
+  const [profile, setProfile] = useState<Profile>(EMPTY_PROFILE);
   const [hydrated, setHydrated] = useState(false);
   const [storageWarning, setStorageWarning] = useState<string | null>(null);
 
@@ -103,6 +123,7 @@ export function AuditProvider({ children }: { children: ReactNode }) {
       setLastAuditDate(persisted.lastAuditDate);
       setGroqApiKey(persisted.groqApiKey);
       setAiSummaryCache(persisted.aiSummaryCache);
+      setProfile(persisted.profile);
       setHydrated(true);
     });
     return () => {
@@ -112,7 +133,7 @@ export function AuditProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!hydrated || typeof window === "undefined") return;
-    const payload: PersistedState = { results, lastAuditDate, groqApiKey, aiSummaryCache };
+    const payload: PersistedState = { results, lastAuditDate, groqApiKey, aiSummaryCache, profile };
     idbSet(STORAGE_KEY, payload)
       .then(() => setStorageWarning(null))
       .catch(async () => {
@@ -136,7 +157,7 @@ export function AuditProvider({ children }: { children: ReactNode }) {
           setStorageWarning("Could not save audit results to browser storage. Recent results may not persist.");
         }
       });
-  }, [results, lastAuditDate, groqApiKey, aiSummaryCache, hydrated]);
+  }, [results, lastAuditDate, groqApiKey, aiSummaryCache, profile, hydrated]);
 
   const value = useMemo<AuditContextValue>(
     () => ({
@@ -147,6 +168,7 @@ export function AuditProvider({ children }: { children: ReactNode }) {
       groqApiKey,
       storageWarning,
       aiSummaryCache,
+      profile,
       addResult: (result) => {
         setResults((prev) => {
           const existingIdx = prev.findIndex((r) => r.url === result.url);
@@ -190,6 +212,7 @@ export function AuditProvider({ children }: { children: ReactNode }) {
       setCachedAiSummary: (key, entry) => {
         setAiSummaryCache((prev) => ({ ...prev, [key]: entry }));
       },
+      setProfile,
       clearAll: () => {
         setResults([]);
         setLastAuditDate(null);
@@ -198,7 +221,7 @@ export function AuditProvider({ children }: { children: ReactNode }) {
         setAiSummaryCache({});
       },
     }),
-    [results, lastAuditDate, selectedUrlIndex, navFilter, groqApiKey, storageWarning, aiSummaryCache],
+    [results, lastAuditDate, selectedUrlIndex, navFilter, groqApiKey, storageWarning, aiSummaryCache, profile],
   );
 
   return <AuditContext.Provider value={value}>{children}</AuditContext.Provider>;
