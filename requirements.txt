@@ -13,6 +13,13 @@ httpx[http2]>=0.27
 # Phase 0 platform foundations (worker/, alembic/) — see worker/README.md
 sqlalchemy>=2.0
 alembic>=1.13
+# Postgres driver — worker/db/session.py defaults to SQLite for local dev,
+# but reads DATABASE_URL (see worker/README.md "Going to production"); without
+# this, setting DATABASE_URL=postgresql://... in production fails at import
+# time with "No module named psycopg2" the first time any api/*.py handler
+# touches the DB. Belongs in requirements.txt (not requirements-dev.txt)
+# because api/*.py's production Vercel functions need it, not just tests.
+psycopg2-binary>=2.9
 # Phase 3 scheduling (worker/scheduler.py) — cron expression parsing
 croniter>=2.0
 # Phase 4 JS rendering (modules/renderer.py) — after installing, also run:

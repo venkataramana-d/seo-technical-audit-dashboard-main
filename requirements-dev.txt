@@ -1,2 +1,5 @@
 -r requirements.txt
 pytest>=8.0
+# tests/test_report_generator.py reads back the xlsx bytes generate_excel()
+# produces with xlsxwriter, via openpyxl, to assert on cell contents/colours.
+openpyxl>=3.1
