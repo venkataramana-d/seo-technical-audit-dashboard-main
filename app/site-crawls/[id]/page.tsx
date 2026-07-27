@@ -300,6 +300,69 @@ function usePageIssues(crawlId: number, pageId: number | null) {
   return issues;
 }
 
+// Issue types the AI Content Agent can draft a fix for (mirrors
+// modules/content_agent.py SUPPORTED_ISSUE_TYPES — title/meta only).
+const AI_DRAFTABLE = /title|description|meta/i;
+
+function AiDraftButton({ issue }: { issue: IssueRow }) {
+  const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState<{ draftText: string; confidence: number | null; suggestionType: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run() {
+    setBusy(true);
+    setError(null);
+    setDraft(null);
+    try {
+      const res = await fetch("/api/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "content-draft", issueType: issue.issueType, url: issue.pageUrl }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) throw new Error(data.error || "Could not generate a draft.");
+      setDraft({ draftText: data.draftText, confidence: data.confidence ?? null, suggestionType: data.suggestionType });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not generate a draft.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 border-t border-[var(--seo-border)] pt-2.5">
+      <button
+        type="button"
+        onClick={run}
+        disabled={busy}
+        className="inline-flex items-center gap-1.5 rounded-lg btn-gradient px-2.5 py-1.5 text-[12px] font-semibold text-white disabled:opacity-60"
+      >
+        <svg width={13} height={13} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 2l1.9 5.1L19 9l-5.1 1.9L12 16l-1.9-5.1L5 9l5.1-1.9L12 2z" />
+        </svg>
+        {busy ? "Drafting…" : draft ? "Redraft with AI" : "Draft a fix with AI"}
+      </button>
+      {error ? <p className="mt-1.5 text-[var(--seo-error)]">{error}</p> : null}
+      {draft ? (
+        <div className="mt-2 rounded-[var(--seo-radius-sm)] border border-[var(--seo-accent-border)] bg-[var(--seo-accent-light)] p-2.5">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--seo-accent)]">
+              Suggested {draft.suggestionType.replace(/_/g, " ")}
+            </span>
+            {draft.confidence != null ? (
+              <span className="text-[11px] tabular-nums text-[var(--seo-muted)]">
+                confidence {Math.round(draft.confidence * 100)}%
+              </span>
+            ) : null}
+          </div>
+          <p className="text-[13px] text-[var(--seo-heading)]">{draft.draftText}</p>
+          <p className="mt-1 text-[11px] text-[var(--seo-muted)]">Draft only — review before applying it to your page.</p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function DetailPanel({
   crawlId,
   selected,
@@ -380,6 +443,7 @@ function DetailPanel({
               View page: {i.pageUrl}
             </button>
           ) : null}
+          {AI_DRAFTABLE.test(i.issueType) ? <AiDraftButton issue={i} /> : null}
         </div>
       </Card>
     );
