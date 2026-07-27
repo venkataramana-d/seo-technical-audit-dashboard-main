@@ -27,3 +27,7 @@ croniter>=2.0
 playwright>=1.40
 # Phase 5 API-key vault (worker/vault.py) — Fernet symmetric encryption
 cryptography>=42.0
+# Phase 6 AI agents (modules/llm.py) — Anthropic client for the on-demand
+# content-draft / ask-your-crawl agents; used lazily (only when an AI action
+# runs with a vaulted 'anthropic' key), but must be installed for that import.
+anthropic>=0.39
