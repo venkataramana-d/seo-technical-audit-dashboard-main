@@ -162,6 +162,12 @@ def test_org_isolation_list_and_cross_tenant_404(isolated_db):
     s3, _ = _sent_status_and_body(h3)
     assert s3 == 200
 
+    # Alice cannot diff her crawl against Bob's via compareToId (no data leak).
+    h4 = _mock_handler({"action": "compare", "crawlId": crawl_a, "compareToId": crawl_b}, cookie=cookie_a)
+    crawls.handler.do_POST(h4)
+    s4, _ = _sent_status_and_body(h4)
+    assert s4 == 404
+
 
 def test_unknown_action_returns_400():
     h = _mock_handler({"action": "not-a-real-action"})

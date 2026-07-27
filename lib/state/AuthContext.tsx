@@ -46,10 +46,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     try {
       const res = await fetch("/api/auth", { credentials: "include" });
-      if (!res.ok) {
-        // 404 (auth backend not deployed, e.g. local next dev) or 5xx: don't
-        // lock the user out of a frontend-only environment.
+      if (res.status === 404) {
+        // Auth backend isn't deployed (e.g. local `next dev`, where the Python
+        // api/*.py don't run) — keep the app open for frontend-only work.
         setStatus("unavailable");
+        setUser(null);
+        return;
+      }
+      if (!res.ok) {
+        // Deployed but not authenticated (401/403) or a transient 5xx: treat as
+        // signed out so the gate sends the user to /login rather than exposing
+        // the app shell during a backend hiccup.
+        setStatus("anon");
         setUser(null);
         return;
       }

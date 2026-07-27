@@ -132,6 +132,14 @@ def _handle_ingest(handler, payload):
     if not isinstance(outcome, dict):
         send_json(handler, 400, {"error": "outcome (object) is required"})
         return
+    # A success outcome must carry page.url (persist_result indexes it directly);
+    # skip/error outcomes are fine as-is. Reject a malformed body with 400, not 500.
+    is_skip_or_error = outcome.get("skipped") == "robots" or "error" in outcome
+    if not is_skip_or_error:
+        page = outcome.get("page")
+        if not isinstance(page, dict) or not page.get("url"):
+            send_json(handler, 400, {"error": "outcome.page.url is required for a successful result"})
+            return
     try:
         with SessionLocal() as db:
             crawl = db.get(Crawl, crawl_id)
@@ -237,6 +245,17 @@ def _handle_compare(handler, payload):
                 send_json(handler, 200, {"available": False})
                 return
             compare_to_id = previous.id
+
+        # Ownership: the compare-against crawl is also client-supplied, so it
+        # must belong to the same org (the auto-selected previous crawl already
+        # does — same project — but an explicit compareToId must be verified, or
+        # a tenant could diff against any other org's crawl and read its data).
+        org_id = getattr(handler, "_org_id", None)
+        if org_id is not None:
+            with SessionLocal() as db:
+                if crawl_for_org(db, compare_to_id, org_id) is None:
+                    send_json(handler, 404, {"error": "Crawl not found."})
+                    return
 
         diff = compare_crawls(compare_to_id, crawl_id)
         send_json(handler, 200, {

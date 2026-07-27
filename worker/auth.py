@@ -193,10 +193,21 @@ def signup(db, email: str, password: str, org_name: str) -> User:
     return user
 
 
+_dummy_hash: str | None = None
+
+
 def login(db, email: str, password: str) -> User | None:
-    """Return the user on valid credentials, else None (no existence leak)."""
+    """Return the user on valid credentials, else None (no existence leak — the
+    no-such-user path still runs a scrypt verify against a dummy hash so its
+    response time matches the wrong-password path, closing the timing oracle)."""
+    global _dummy_hash
     user = db.scalar(select(User).where(User.email == email.strip().lower()))
-    if user is None or not verify_password(password, user.password_hash):
+    if user is None:
+        if _dummy_hash is None:
+            _dummy_hash = hash_password("timing-equalizer-not-a-real-password")
+        verify_password(password, _dummy_hash)  # constant-time-ish miss path
+        return None
+    if not verify_password(password, user.password_hash):
         return None
     return user
 
