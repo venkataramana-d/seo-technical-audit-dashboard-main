@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { AuditProvider } from "@/lib/state/AuditContext";
+import { AuthProvider } from "@/lib/state/AuthContext";
 import { AppShell } from "@/components/AppShell";
 import { themeInitScript } from "@/components/ThemeToggle";
 
@@ -77,9 +78,11 @@ export default async function RootLayout({
         />
       </head>
       <body className="min-h-full flex flex-col bg-[var(--seo-app-bg)] text-[var(--seo-text)]">
-        <AuditProvider>
-          <AppShell>{children}</AppShell>
-        </AuditProvider>
+        <AuthProvider>
+          <AuditProvider>
+            <AppShell>{children}</AppShell>
+          </AuditProvider>
+        </AuthProvider>
       </body>
     </html>
   );

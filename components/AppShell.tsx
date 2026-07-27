@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Sidebar } from "@/components/Sidebar";
 import { GlobalSearch } from "@/components/GlobalSearch";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { PlusIcon } from "@/components/icons";
 import { useAudit } from "@/lib/state/AuditContext";
+import { useAuth } from "@/lib/state/AuthContext";
 
 // Breadcrumb label for the current route (the detail drill-down reads as part
 // of Results). Kept in sync with the nav items in Sidebar.tsx.
@@ -25,10 +26,35 @@ function pageTitle(pathname: string): string {
 
 export function AppShell({ children }: { children: ReactNode }) {
   const { storageWarning } = useAudit();
+  const { user, status, logout } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const title = pageTitle(pathname);
+  const isLoginRoute = pathname === "/login";
+
+  // Send signed-out users to the login screen — but only when the auth backend
+  // is actually reachable. "unavailable" means the Python API isn't running
+  // (local `next dev`), where we keep the app open for frontend-only work.
+  useEffect(() => {
+    if (status === "anon" && !isLoginRoute) {
+      router.replace("/login");
+    }
+  }, [status, isLoginRoute, router]);
+
+  // The login screen renders full-bleed, without the app chrome.
+  if (isLoginRoute) {
+    return <>{children}</>;
+  }
+
+  // Avoid flashing the app before we know the session, or mid-redirect.
+  if (status === "loading" || (status === "anon" && !isLoginRoute)) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[var(--seo-app-bg)]">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-[var(--seo-border-strong)] border-t-[var(--seo-accent)]" aria-label="Loading" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen md:grid md:grid-cols-[248px_1fr]">
@@ -83,6 +109,31 @@ export function AppShell({ children }: { children: ReactNode }) {
               <span className="hidden sm:inline">New Audit</span>
             </button>
             <ThemeToggle />
+            {user ? (
+              <div className="flex items-center gap-2 border-l border-[var(--seo-border)] pl-2.5">
+                <div
+                  className="flex h-7 w-7 items-center justify-center rounded-full text-[12px] font-bold text-white"
+                  style={{ background: "var(--seo-gradient)" }}
+                  title={user.email}
+                  aria-hidden="true"
+                >
+                  {user.email.slice(0, 1).toUpperCase()}
+                </div>
+                <span className="hidden max-w-[150px] truncate text-[13px] text-[var(--seo-text-light)] lg:inline">
+                  {user.email}
+                </span>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await logout();
+                    router.replace("/login");
+                  }}
+                  className="rounded-lg px-2.5 py-1.5 text-[13px] font-medium text-[var(--seo-muted)] transition hover:bg-[var(--seo-card-hover)] hover:text-[var(--seo-text)]"
+                >
+                  Log out
+                </button>
+              </div>
+            ) : null}
           </div>
         </header>
 
