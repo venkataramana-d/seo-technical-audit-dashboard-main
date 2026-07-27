@@ -95,8 +95,24 @@ def _project_id_of(session_factory, crawl_id) -> int:
 
 def test_all_actions_registered():
     assert set(crawls._ACTIONS) == {
-        "list", "create", "status", "thematic", "trend", "pages", "issues", "links", "compare", "setSchedule",
+        "list", "create", "ingest", "finalize", "status", "thematic", "trend",
+        "pages", "issues", "links", "compare", "setSchedule",
     }
+
+
+def test_ingest_requires_outcome(isolated_db):
+    # url present, outcome missing -> 400 before any DB write
+    h = _mock_handler({"action": "ingest", "crawlId": 1, "url": "https://example.com/"})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+    assert status == 400 and "outcome" in body["error"]
+
+
+def test_finalize_requires_crawl_id(isolated_db):
+    h = _mock_handler({"action": "finalize"})
+    crawls.handler.do_POST(h)
+    status, _ = _sent_status_and_body(h)
+    assert status == 400
 
 
 def test_unknown_action_returns_400():

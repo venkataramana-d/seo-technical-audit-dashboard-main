@@ -16,6 +16,7 @@ modules/*.py directly.
 import logging
 import os
 import sys
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from modules._http import bulk_url_cap, read_json_body, require_str, send_json  # noqa: E402
 from sqlalchemy import func, select  # noqa: E402
 from worker.crawl_diff import compare_crawls, get_previous_completed_crawl, get_score_trend  # noqa: E402
-from worker.crawl_service import create_crawl, set_crawl_config_schedule  # noqa: E402
+from worker.crawl_service import create_crawl, finalize_crawl, persist_result, set_crawl_config_schedule  # noqa: E402
 from worker.db.models import Crawl, CrawlConfig, Issue, Link, Page, Project  # noqa: E402
 from worker.db.session import SessionLocal  # noqa: E402
 from worker.queue import enqueue  # noqa: E402
@@ -100,6 +101,59 @@ def _handle_create(handler, payload):
     except Exception:  # noqa: BLE001
         logger.exception("crawls.py (create) request failed")
         send_json(handler, 500, {"error": "Internal error while starting the crawl."})
+
+
+def _handle_ingest(handler, payload):
+    """Persist one audited page into a crawl (Vercel-only: the browser drives
+    the crawl and streams each page here, replacing the always-on worker).
+    Body: {crawlId, url, outcome} where `outcome` is the per-URL result shape
+    worker/crawl_service.persist_result() expects: {"page": {"url", "status_code",
+    "audit": <api/audit-pipeline "audit" result>}}."""
+    crawl_id = _parse_crawl_id(handler, payload)
+    if crawl_id is None:
+        return
+    url = require_str(handler, payload, "url")
+    if url is None:
+        return
+    outcome = payload.get("outcome")
+    if not isinstance(outcome, dict):
+        send_json(handler, 400, {"error": "outcome (object) is required"})
+        return
+    try:
+        with SessionLocal() as db:
+            crawl = db.get(Crawl, crawl_id)
+            if crawl is None:
+                send_json(handler, 404, {"error": "Crawl not found."})
+                return
+            if crawl.status == "queued":
+                crawl.status = "running"
+                if crawl.started_at is None:
+                    crawl.started_at = datetime.now(timezone.utc)
+                db.commit()
+        persist_result(crawl_id, url, outcome)
+        with SessionLocal() as db:
+            crawl = db.get(Crawl, crawl_id)
+            send_json(handler, 200, {"ok": True, "pagesCrawled": crawl.pages_crawled if crawl else None})
+    except Exception:  # noqa: BLE001
+        logger.exception("crawls.py ingest failed for crawl %s", crawl_id)
+        send_json(handler, 500, {"error": "Internal error while saving the page."})
+
+
+def _handle_finalize(handler, payload):
+    """Close out a browser-driven crawl: runs the site-wide aggregation pass and
+    computes the health/SEO scores (worker/crawl_service.finalize_crawl)."""
+    crawl_id = _parse_crawl_id(handler, payload)
+    if crawl_id is None:
+        return
+    status = (payload.get("status") or "completed").strip()
+    if status not in ("completed", "failed"):
+        status = "completed"
+    try:
+        finalize_crawl(crawl_id, status)
+        send_json(handler, 200, {"ok": True, "status": status})
+    except Exception:  # noqa: BLE001
+        logger.exception("crawls.py finalize failed for crawl %s", crawl_id)
+        send_json(handler, 500, {"error": "Internal error while finalizing the crawl."})
 
 
 def _handle_status(handler, payload):
@@ -428,6 +482,8 @@ def _handle_links(handler, payload):
 _ACTIONS = {
     "list": _handle_list,
     "create": _handle_create,
+    "ingest": _handle_ingest,
+    "finalize": _handle_finalize,
     "status": _handle_status,
     "thematic": _handle_thematic,
     "trend": _handle_trend,
