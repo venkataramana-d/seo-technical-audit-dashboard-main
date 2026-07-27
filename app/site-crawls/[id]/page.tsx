@@ -161,8 +161,38 @@ interface TrendPoint {
 
 const POLL_INTERVAL_MS = 3000;
 const FINISHED_STATUSES = new Set(["completed", "failed"]);
-const TABS = ["Overview", "Pages", "Issues", "Links", "Compare"] as const;
+const TABS = ["Overview", "Pages", "Issues", "Site-wide", "Links", "Compare"] as const;
 type Tab = (typeof TABS)[number];
+
+// Site-wide analysis (api/analyze.py) — the "brains" folded in from the rebuild.
+interface SiteIssue {
+  issueType: string;
+  category: string;
+  severity: string;
+  impactScore: number | null;
+  effortLevel: string | null;
+  what: string;
+  why: string;
+  fix: string;
+  affectedUrls: string[];
+  affectedCount: number;
+}
+interface SitewideResponse {
+  pageCount: number;
+  linkCount: number;
+  issueCount: number;
+  issues: SiteIssue[];
+}
+interface CrawlGraphResponse {
+  root: string;
+  maxDepth: number;
+  avgDepth: number;
+  reachableCount: number;
+  pagesPerDepth: Record<string, number>;
+  unreachableUrls: string[];
+  deepestPages: { url: string; depth: number }[];
+  issues: SiteIssue[];
+}
 
 const SEVERITY_STYLE: Record<string, { color: string; bg: string }> = {
   error: { color: "var(--seo-error)", bg: "var(--seo-error-bg)" },
@@ -428,6 +458,17 @@ async function postCrawlsAction<T>(body: Record<string, unknown>): Promise<T> {
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "Request failed.");
+  return data as T;
+}
+
+async function postAnalyzeAction<T>(action: string, crawlId: number): Promise<T> {
+  const res = await fetch("/api/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, crawlId }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Analysis failed.");
   return data as T;
 }
 
@@ -1268,6 +1309,175 @@ function CompareTab({ crawlId, rootUrl }: { crawlId: number; rootUrl: string | n
   );
 }
 
+function humanizeType(t: string): string {
+  return t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function MiniStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-[var(--seo-radius)] border border-[var(--seo-border)] bg-[var(--seo-card-bg)] px-3.5 py-3">
+      <div className="text-xl font-bold tabular-nums text-[var(--seo-heading)]">{value.toLocaleString()}</div>
+      <div className="text-[11px] text-[var(--seo-muted)]">{label}</div>
+    </div>
+  );
+}
+
+function SiteIssueCard({ issue }: { issue: SiteIssue }) {
+  const style = SEVERITY_STYLE[issue.severity] ?? SEVERITY_STYLE.notice;
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-[var(--seo-radius)] border border-[var(--seo-border)] bg-[var(--seo-card-bg)]">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-3 px-4 py-3 text-left"
+      >
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold capitalize" style={{ color: style.color }}>
+          <StatusDot color={style.color} />
+          {issue.severity}
+        </span>
+        <span className="text-sm font-semibold text-[var(--seo-heading)]">{humanizeType(issue.issueType)}</span>
+        <span className="hidden text-xs text-[var(--seo-muted)] sm:inline">{issue.category}</span>
+        <span className="ml-auto shrink-0 text-xs tabular-nums text-[var(--seo-muted)]">
+          {issue.affectedCount} URL{issue.affectedCount === 1 ? "" : "s"}
+        </span>
+      </button>
+      {open ? (
+        <div className="flex flex-col gap-2 border-t border-[var(--seo-border)] px-4 py-3 text-[13px] text-[var(--seo-text)]">
+          <div><span className="font-semibold text-[var(--seo-subheading)]">What: </span>{issue.what}</div>
+          <div><span className="font-semibold text-[var(--seo-subheading)]">Why it matters: </span>{issue.why}</div>
+          <div><span className="font-semibold text-[var(--seo-subheading)]">How to fix: </span>{issue.fix}</div>
+          {issue.affectedUrls.length > 0 ? (
+            <div>
+              <span className="font-semibold text-[var(--seo-subheading)]">Affected pages:</span>
+              <ul className="mt-1 flex flex-col gap-0.5">
+                {issue.affectedUrls.slice(0, 8).map((u) => (
+                  <li key={u} className="truncate font-mono text-xs text-[var(--seo-muted)]" title={u}>{u}</li>
+                ))}
+                {issue.affectedUrls.length > 8 ? (
+                  <li className="text-xs text-[var(--seo-muted)]">+{issue.affectedUrls.length - 8} more</li>
+                ) : null}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SitewideTab({ crawlId }: { crawlId: number }) {
+  const [sitewide, setSitewide] = useState<SitewideResponse | null>(null);
+  const [graph, setGraph] = useState<CrawlGraphResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    Promise.all([
+      postAnalyzeAction<SitewideResponse>("sitewide", crawlId),
+      postAnalyzeAction<CrawlGraphResponse>("crawl-graph", crawlId),
+    ])
+      .then(([sw, g]) => {
+        if (!cancelled) { setSitewide(sw); setGraph(g); }
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to run analysis.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [crawlId]);
+
+  if (loading) {
+    return <Card><p className="text-xs text-[var(--seo-muted)]">Running site-wide analysis…</p></Card>;
+  }
+  if (error) {
+    return <Card><p className="text-xs text-[var(--seo-error)]">{error}</p></Card>;
+  }
+
+  const issues = sitewide?.issues ?? [];
+  const depthIssues = graph?.issues ?? [];
+  const perDepth = graph ? Object.entries(graph.pagesPerDepth) : [];
+  const maxPerDepth = perDepth.length ? Math.max(...perDepth.map(([, c]) => c)) : 1;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <MiniStat label="Pages analyzed" value={sitewide?.pageCount ?? 0} />
+        <MiniStat label="Links seen" value={sitewide?.linkCount ?? 0} />
+        <MiniStat label="Site-wide issues" value={sitewide?.issueCount ?? 0} />
+        <MiniStat label="Max click depth" value={graph?.maxDepth ?? 0} />
+      </div>
+
+      <Card>
+        <h3 className="mb-3 text-sm font-semibold text-[var(--seo-heading)]">Site-wide issues</h3>
+        {issues.length === 0 ? (
+          <p className="text-xs text-[var(--seo-muted)]">
+            No site-wide issues found — no duplicate titles, descriptions, orphan pages, redirect loops,
+            or broken internal links across the crawl.
+          </p>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {issues.map((iss, i) => <SiteIssueCard key={`${iss.issueType}-${i}`} issue={iss} />)}
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <h3 className="mb-1 text-sm font-semibold text-[var(--seo-heading)]">Crawl depth</h3>
+        <p className="mb-3 text-xs text-[var(--seo-muted)]">
+          How many clicks each page sits from the homepage — deep pages are harder for users and search engines to reach.
+        </p>
+        {graph ? (
+          <>
+            <div className="flex flex-col gap-1.5">
+              {perDepth
+                .sort((a, b) => Number(a[0]) - Number(b[0]))
+                .map(([depth, count]) => (
+                  <div key={depth} className="flex items-center gap-2 text-xs">
+                    <span className="w-16 shrink-0 text-[var(--seo-muted)]">Depth {depth}</span>
+                    <div className="h-4 flex-1 overflow-hidden rounded bg-[var(--seo-card-hover)]">
+                      <div className="h-4 rounded" style={{ width: `${(count / maxPerDepth) * 100}%`, background: "var(--seo-gradient)" }} />
+                    </div>
+                    <span className="w-10 shrink-0 text-right tabular-nums text-[var(--seo-text)]">{count}</span>
+                  </div>
+                ))}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 text-xs">
+              <span><span className="text-[var(--seo-muted)]">Average depth: </span><span className="font-semibold tabular-nums text-[var(--seo-heading)]">{graph.avgDepth}</span></span>
+              <span><span className="text-[var(--seo-muted)]">Reachable pages: </span><span className="font-semibold tabular-nums text-[var(--seo-heading)]">{graph.reachableCount}</span></span>
+            </div>
+            {graph.unreachableUrls.length > 0 ? (
+              <div className="mt-3">
+                <p className="text-xs font-semibold text-[var(--seo-subheading)]">
+                  Orphan / unreachable pages ({graph.unreachableUrls.length})
+                </p>
+                <ul className="mt-1 flex flex-col gap-0.5">
+                  {graph.unreachableUrls.slice(0, 8).map((u) => (
+                    <li key={u} className="truncate font-mono text-xs text-[var(--seo-muted)]" title={u}>{u}</li>
+                  ))}
+                  {graph.unreachableUrls.length > 8 ? (
+                    <li className="text-xs text-[var(--seo-muted)]">+{graph.unreachableUrls.length - 8} more</li>
+                  ) : null}
+                </ul>
+              </div>
+            ) : null}
+            {depthIssues.length > 0 ? (
+              <div className="mt-3 flex flex-col gap-2">
+                {depthIssues.map((iss, i) => <SiteIssueCard key={`depth-${i}`} issue={iss} />)}
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </Card>
+    </div>
+  );
+}
+
 export default function CrawlDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -1426,6 +1636,7 @@ export default function CrawlDetailPage() {
               { key: "Overview", label: "Overview" },
               { key: "Pages", label: "Pages", count: tabCounts.pages },
               { key: "Issues", label: "Issues", count: tabCounts.issues },
+              { key: "Site-wide", label: "Site-wide" },
               { key: "Links", label: "Links", count: tabCounts.links },
               { key: "Compare", label: "Compare" },
             ]}
@@ -1456,6 +1667,7 @@ export default function CrawlDetailPage() {
               <DetailPanel crawlId={crawlId} selected={selectedRow} onViewPage={viewPage} />
             </div>
           ) : null}
+          {activeTab === "Site-wide" ? <SitewideTab crawlId={crawlId} /> : null}
           {activeTab === "Links" ? (
             <div className="flex flex-col gap-3">
               <LinksTab

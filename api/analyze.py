@@ -108,6 +108,24 @@ def _load_crawl_data(db, crawl_id: int):
     return crawl, root_url, _to_site_pages(pages), _to_site_links(links, page_url_by_id), set(page_url_by_id.values())
 
 
+def _site_issue_dto(si) -> dict:
+    """Full JSON for a SiteIssue — to_explanation_json() alone drops the
+    type/severity/impact fields the UI needs, so serialize the whole record."""
+    return {
+        "issueType": si.issue_type,
+        "category": si.category,
+        "severity": si.severity,
+        "impactScore": si.impact_score,
+        "effortLevel": si.effort_level,
+        "what": si.what,
+        "why": si.why,
+        "rootCause": si.root_cause,
+        "fix": si.fix,
+        "affectedUrls": si.affected_urls,
+        "affectedCount": len(si.affected_urls),
+    }
+
+
 def _parse_crawl_id(handler, payload):
     raw = payload.get("crawlId", payload.get("crawl_id"))
     try:
@@ -142,7 +160,7 @@ def _handle_sitewide(handler, payload):
                 "pageCount": len(site_pages),
                 "linkCount": len(site_links),
                 "issueCount": len(issues),
-                "issues": [i.to_explanation_json() for i in issues],
+                "issues": [_site_issue_dto(i) for i in issues],
             })
     except Exception:  # noqa: BLE001
         logger.exception("analyze.py sitewide failed for crawl %s", crawl_id)
@@ -174,7 +192,7 @@ def _handle_crawl_graph(handler, payload):
                 "pagesPerDepth": report.pages_per_depth,
                 "unreachableUrls": report.unreachable_urls,
                 "deepestPages": [{"url": u, "depth": d} for (u, d) in report.deepest_pages],
-                "issues": [i.to_explanation_json() for i in issues],
+                "issues": [_site_issue_dto(i) for i in issues],
             })
     except Exception:  # noqa: BLE001
         logger.exception("analyze.py crawl-graph failed for crawl %s", crawl_id)
