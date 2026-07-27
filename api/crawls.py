@@ -269,6 +269,9 @@ def _handle_pages(handler, payload):
                     "url": p.url,
                     "statusCode": p.status_code,
                     "title": p.title,
+                    "metaDescription": p.meta_description,
+                    "canonicalUrl": p.canonical_url,
+                    "h1": p.h1,
                     "seoScore": p.seo_score,
                     "fetchedAt": p.fetched_at.isoformat() if p.fetched_at else None,
                     "issueCounts": counts_by_page.get(p.id, {}),
@@ -291,6 +294,7 @@ def _handle_issues(handler, payload):
         severity = (payload.get("severity") or "").strip() or None
         category = (payload.get("category") or "").strip() or None
         search = (payload.get("search") or "").strip()
+        page_id = payload.get("pageId")
 
         with SessionLocal() as db:
             filters = [Issue.crawl_id == crawl_id]
@@ -298,6 +302,8 @@ def _handle_issues(handler, payload):
                 filters.append(Issue.severity == severity)
             if search:
                 filters.append(Issue.issue_type.ilike(f"%{search}%"))
+            if page_id is not None:
+                filters.append(Issue.page_id == int(page_id))
 
             # category lives inside explanation_json, not a column — SQL-level
             # JSON-path filtering would be fragile/dialect-specific at this
