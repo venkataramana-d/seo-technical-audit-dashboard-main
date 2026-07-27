@@ -27,7 +27,14 @@ from worker.crawl_diff import compare_crawls, get_previous_completed_crawl, get_
 from worker.crawl_service import create_crawl, finalize_crawl, persist_result, set_crawl_config_schedule  # noqa: E402
 from worker.db.models import Crawl, CrawlConfig, Issue, Link, Page, Project  # noqa: E402
 from worker.db.session import SessionLocal  # noqa: E402
+from worker.access import crawl_for_org, resolve_org_id  # noqa: E402
+from worker.auth import AuthError  # noqa: E402
 from worker.queue import enqueue  # noqa: E402
+
+# Actions that operate on a specific crawl id — gated by per-org ownership.
+_CRAWL_SCOPED = {"status", "thematic", "trend", "compare", "setSchedule", "pages", "issues", "links", "ingest", "finalize"}
+# Actions that resolve an org (list/create derive scope from the session too).
+_ORG_SCOPED = {"list", "create"} | _CRAWL_SCOPED
 from worker.site_audit import get_thematic_report  # noqa: E402
 
 # Pagination bounds shared by the "pages" and "issues" listing actions.
@@ -63,13 +70,17 @@ def _parse_crawl_id(handler, payload) -> int | None:
 
 def _handle_list(handler, payload):
     try:
+        org_id = getattr(handler, "_org_id", None)
         with SessionLocal() as db:
-            rows = db.execute(
+            query = (
                 select(Crawl, Project.root_url)
                 .join(Project, Crawl.project_id == Project.id)
                 .order_by(Crawl.id.desc())
                 .limit(50)
-            ).all()
+            )
+            if org_id is not None:
+                query = query.where(Project.org_id == org_id)
+            rows = db.execute(query).all()
             crawls = [_crawl_summary(crawl, root_url) for crawl, root_url in rows]
         send_json(handler, 200, {"crawls": crawls})
     except Exception:  # noqa: BLE001
@@ -89,10 +100,12 @@ def _handle_create(handler, payload):
         render_js = bool(payload.get("renderJs", False))
         schedule_cron = (payload.get("scheduleCron") or "").strip() or None
 
+        org_id = getattr(handler, "_org_id", None)
         with SessionLocal() as db:
             crawl = create_crawl(
                 db, root_url, max_pages=max_pages, max_depth=max_depth,
                 robots_mode=robots_mode, render_js=render_js, schedule_cron=schedule_cron,
+                org_id=org_id,
             )
             crawl_id = crawl.id
 
@@ -509,4 +522,26 @@ class handler(BaseHTTPRequestHandler):
         if fn is None:
             send_json(self, 400, {"error": f"Unknown or missing action (expected one of {sorted(_ACTIONS)})"})
             return
+
+        # Per-org isolation (05 §4): derive the org from the session and verify
+        # crawl ownership before the handler runs. `resolve_org_id` returns None
+        # in dev/test (no session, no VERCEL) — no scoping, preserving the
+        # single-tenant behavior; in production an unauthenticated org-scoped
+        # request is rejected with 401.
+        self._org_id = None
+        if action in _ORG_SCOPED:
+            with SessionLocal() as db:
+                try:
+                    self._org_id = resolve_org_id(self, db)
+                except AuthError as e:
+                    send_json(self, e.status, {"error": e.message})
+                    return
+                if self._org_id is not None and action in _CRAWL_SCOPED:
+                    try:
+                        crawl_id = int(payload.get("crawlId"))
+                    except (TypeError, ValueError):
+                        crawl_id = None
+                    if crawl_id is not None and crawl_for_org(db, crawl_id, self._org_id) is None:
+                        send_json(self, 404, {"error": "Crawl not found."})
+                        return
         fn(self, payload)

@@ -32,6 +32,8 @@ from modules.crawl_graph import build_depth_report, excessive_depth_issues  # no
 from modules.sitewide import SiteLink, SitePage, run_sitewide_audit  # noqa: E402
 from worker.db.models import Crawl, Link, Page, Project  # noqa: E402
 from worker.db.session import SessionLocal  # noqa: E402
+from worker.access import crawl_for_org, resolve_org_id  # noqa: E402
+from worker.auth import AuthError  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -253,4 +255,22 @@ class handler(BaseHTTPRequestHandler):
         if fn is None:
             send_json(self, 400, {"error": f"Unknown or missing action (expected one of {sorted(_ACTIONS)})"})
             return
+
+        # Per-org isolation: every analyze action is crawl-scoped. Verify the
+        # session owns the crawl (None org = dev/test, no scoping; 401 if
+        # unauthenticated in production).
+        try:
+            raw = payload.get("crawlId", payload.get("crawl_id"))
+            crawl_id = int(raw)
+        except (TypeError, ValueError):
+            crawl_id = None
+        with SessionLocal() as db:
+            try:
+                org_id = resolve_org_id(self, db)
+            except AuthError as e:
+                send_json(self, e.status, {"error": e.message})
+                return
+            if org_id is not None and crawl_id is not None and crawl_for_org(db, crawl_id, org_id) is None:
+                send_json(self, 404, {"error": "Crawl not found."})
+                return
         fn(self, payload)

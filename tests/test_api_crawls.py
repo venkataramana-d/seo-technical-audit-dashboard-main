@@ -16,7 +16,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from worker import crawl_diff, queue as queue_module, site_audit
-from worker.db.models import Base, Crawl, CrawlConfig, Issue, Job, Link, Organization, Page, Project
+from worker.auth import create_session_token, hash_password
+from worker.db.models import Base, Crawl, CrawlConfig, Issue, Job, Link, Membership, Organization, Page, Project, User
 
 
 def _load(name, relative_path):
@@ -30,10 +31,13 @@ def _load(name, relative_path):
 crawls = _load("crawls_under_test", "api/crawls.py")
 
 
-def _mock_handler(body: dict):
+def _mock_handler(body: dict, cookie: str | None = None):
     encoded = json.dumps(body).encode()
     h = MagicMock()
-    h.headers = {"Content-Length": str(len(encoded))}
+    headers = {"Content-Length": str(len(encoded))}
+    if cookie:
+        headers["Cookie"] = cookie
+    h.headers = headers
     h.rfile = io.BytesIO(encoded)
     h.wfile = io.BytesIO()
     return h
@@ -113,6 +117,50 @@ def test_finalize_requires_crawl_id(isolated_db):
     crawls.handler.do_POST(h)
     status, _ = _sent_status_and_body(h)
     assert status == 400
+
+
+def _seed_user_org(session_factory, email: str):
+    """A user + their own org + one crawl — returns (user_id, crawl_id)."""
+    with session_factory() as db:
+        user = User(email=email, password_hash=hash_password("pw12345678"))
+        db.add(user); db.flush()
+        org = Organization(name=f"{email} org"); db.add(org); db.flush()
+        db.add(Membership(user_id=user.id, org_id=org.id, role="owner"))
+        project = Project(org_id=org.id, name="site", root_url=f"https://{email}.example")
+        db.add(project); db.flush()
+        config = CrawlConfig(project_id=project.id, source_type="homepage", robots_mode="respect", max_pages=50)
+        db.add(config); db.flush()
+        crawl = Crawl(project_id=project.id, crawl_config_id=config.id, status="completed", pages_crawled=1)
+        db.add(crawl); db.commit()
+        return user.id, crawl.id
+
+
+def test_org_isolation_list_and_cross_tenant_404(isolated_db):
+    """A logged-in user sees only their own crawls and cannot read another
+    org's crawl (404, no existence leak)."""
+    uid_a, crawl_a = _seed_user_org(isolated_db, "alice")
+    _uid_b, crawl_b = _seed_user_org(isolated_db, "bob")
+    cookie_a = f"sa_session={create_session_token(uid_a)}"
+
+    # Alice's list shows her crawl, not Bob's.
+    h = _mock_handler({"action": "list"}, cookie=cookie_a)
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+    assert status == 200
+    ids = {c["id"] for c in body["crawls"]}
+    assert crawl_a in ids and crawl_b not in ids
+
+    # Alice cannot read Bob's crawl by id.
+    h2 = _mock_handler({"action": "status", "crawlId": crawl_b}, cookie=cookie_a)
+    crawls.handler.do_POST(h2)
+    s2, _ = _sent_status_and_body(h2)
+    assert s2 == 404
+
+    # Alice can read her own.
+    h3 = _mock_handler({"action": "status", "crawlId": crawl_a}, cookie=cookie_a)
+    crawls.handler.do_POST(h3)
+    s3, _ = _sent_status_and_body(h3)
+    assert s3 == 200
 
 
 def test_unknown_action_returns_400():
