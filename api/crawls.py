@@ -16,6 +16,7 @@ modules/*.py directly.
 import logging
 import os
 import sys
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,10 +24,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from modules._http import bulk_url_cap, read_json_body, require_str, send_json  # noqa: E402
 from sqlalchemy import func, select  # noqa: E402
 from worker.crawl_diff import compare_crawls, get_previous_completed_crawl, get_score_trend  # noqa: E402
-from worker.crawl_service import create_crawl, set_crawl_config_schedule  # noqa: E402
+from worker.crawl_service import create_crawl, finalize_crawl, persist_result, set_crawl_config_schedule  # noqa: E402
 from worker.db.models import Crawl, CrawlConfig, Issue, Link, Page, Project  # noqa: E402
 from worker.db.session import SessionLocal  # noqa: E402
+from worker.access import crawl_for_org, resolve_org_id  # noqa: E402
+from worker.auth import AuthError  # noqa: E402
 from worker.queue import enqueue  # noqa: E402
+
+# Actions that operate on a specific crawl id — gated by per-org ownership.
+_CRAWL_SCOPED = {"status", "thematic", "trend", "compare", "setSchedule", "pages", "issues", "links", "ingest", "finalize"}
+# Actions that resolve an org (list/create derive scope from the session too).
+_ORG_SCOPED = {"list", "create"} | _CRAWL_SCOPED
 from worker.site_audit import get_thematic_report  # noqa: E402
 
 # Pagination bounds shared by the "pages" and "issues" listing actions.
@@ -62,13 +70,17 @@ def _parse_crawl_id(handler, payload) -> int | None:
 
 def _handle_list(handler, payload):
     try:
+        org_id = getattr(handler, "_org_id", None)
         with SessionLocal() as db:
-            rows = db.execute(
+            query = (
                 select(Crawl, Project.root_url)
                 .join(Project, Crawl.project_id == Project.id)
                 .order_by(Crawl.id.desc())
                 .limit(50)
-            ).all()
+            )
+            if org_id is not None:
+                query = query.where(Project.org_id == org_id)
+            rows = db.execute(query).all()
             crawls = [_crawl_summary(crawl, root_url) for crawl, root_url in rows]
         send_json(handler, 200, {"crawls": crawls})
     except Exception:  # noqa: BLE001
@@ -88,10 +100,12 @@ def _handle_create(handler, payload):
         render_js = bool(payload.get("renderJs", False))
         schedule_cron = (payload.get("scheduleCron") or "").strip() or None
 
+        org_id = getattr(handler, "_org_id", None)
         with SessionLocal() as db:
             crawl = create_crawl(
                 db, root_url, max_pages=max_pages, max_depth=max_depth,
                 robots_mode=robots_mode, render_js=render_js, schedule_cron=schedule_cron,
+                org_id=org_id,
             )
             crawl_id = crawl.id
 
@@ -100,6 +114,67 @@ def _handle_create(handler, payload):
     except Exception:  # noqa: BLE001
         logger.exception("crawls.py (create) request failed")
         send_json(handler, 500, {"error": "Internal error while starting the crawl."})
+
+
+def _handle_ingest(handler, payload):
+    """Persist one audited page into a crawl (Vercel-only: the browser drives
+    the crawl and streams each page here, replacing the always-on worker).
+    Body: {crawlId, url, outcome} where `outcome` is the per-URL result shape
+    worker/crawl_service.persist_result() expects: {"page": {"url", "status_code",
+    "audit": <api/audit-pipeline "audit" result>}}."""
+    crawl_id = _parse_crawl_id(handler, payload)
+    if crawl_id is None:
+        return
+    url = require_str(handler, payload, "url")
+    if url is None:
+        return
+    outcome = payload.get("outcome")
+    if not isinstance(outcome, dict):
+        send_json(handler, 400, {"error": "outcome (object) is required"})
+        return
+    # A success outcome must carry page.url (persist_result indexes it directly);
+    # skip/error outcomes are fine as-is. Reject a malformed body with 400, not 500.
+    is_skip_or_error = outcome.get("skipped") == "robots" or "error" in outcome
+    if not is_skip_or_error:
+        page = outcome.get("page")
+        if not isinstance(page, dict) or not page.get("url"):
+            send_json(handler, 400, {"error": "outcome.page.url is required for a successful result"})
+            return
+    try:
+        with SessionLocal() as db:
+            crawl = db.get(Crawl, crawl_id)
+            if crawl is None:
+                send_json(handler, 404, {"error": "Crawl not found."})
+                return
+            if crawl.status == "queued":
+                crawl.status = "running"
+                if crawl.started_at is None:
+                    crawl.started_at = datetime.now(timezone.utc)
+                db.commit()
+        persist_result(crawl_id, url, outcome)
+        with SessionLocal() as db:
+            crawl = db.get(Crawl, crawl_id)
+            send_json(handler, 200, {"ok": True, "pagesCrawled": crawl.pages_crawled if crawl else None})
+    except Exception:  # noqa: BLE001
+        logger.exception("crawls.py ingest failed for crawl %s", crawl_id)
+        send_json(handler, 500, {"error": "Internal error while saving the page."})
+
+
+def _handle_finalize(handler, payload):
+    """Close out a browser-driven crawl: runs the site-wide aggregation pass and
+    computes the health/SEO scores (worker/crawl_service.finalize_crawl)."""
+    crawl_id = _parse_crawl_id(handler, payload)
+    if crawl_id is None:
+        return
+    status = (payload.get("status") or "completed").strip()
+    if status not in ("completed", "failed"):
+        status = "completed"
+    try:
+        finalize_crawl(crawl_id, status)
+        send_json(handler, 200, {"ok": True, "status": status})
+    except Exception:  # noqa: BLE001
+        logger.exception("crawls.py finalize failed for crawl %s", crawl_id)
+        send_json(handler, 500, {"error": "Internal error while finalizing the crawl."})
 
 
 def _handle_status(handler, payload):
@@ -170,6 +245,17 @@ def _handle_compare(handler, payload):
                 send_json(handler, 200, {"available": False})
                 return
             compare_to_id = previous.id
+
+        # Ownership: the compare-against crawl is also client-supplied, so it
+        # must belong to the same org (the auto-selected previous crawl already
+        # does — same project — but an explicit compareToId must be verified, or
+        # a tenant could diff against any other org's crawl and read its data).
+        org_id = getattr(handler, "_org_id", None)
+        if org_id is not None:
+            with SessionLocal() as db:
+                if crawl_for_org(db, compare_to_id, org_id) is None:
+                    send_json(handler, 404, {"error": "Crawl not found."})
+                    return
 
         diff = compare_crawls(compare_to_id, crawl_id)
         send_json(handler, 200, {
@@ -269,6 +355,9 @@ def _handle_pages(handler, payload):
                     "url": p.url,
                     "statusCode": p.status_code,
                     "title": p.title,
+                    "metaDescription": p.meta_description,
+                    "canonicalUrl": p.canonical_url,
+                    "h1": p.h1,
                     "seoScore": p.seo_score,
                     "fetchedAt": p.fetched_at.isoformat() if p.fetched_at else None,
                     "issueCounts": counts_by_page.get(p.id, {}),
@@ -291,6 +380,7 @@ def _handle_issues(handler, payload):
         severity = (payload.get("severity") or "").strip() or None
         category = (payload.get("category") or "").strip() or None
         search = (payload.get("search") or "").strip()
+        page_id = payload.get("pageId")
 
         with SessionLocal() as db:
             filters = [Issue.crawl_id == crawl_id]
@@ -298,6 +388,8 @@ def _handle_issues(handler, payload):
                 filters.append(Issue.severity == severity)
             if search:
                 filters.append(Issue.issue_type.ilike(f"%{search}%"))
+            if page_id is not None:
+                filters.append(Issue.page_id == int(page_id))
 
             # category lives inside explanation_json, not a column — SQL-level
             # JSON-path filtering would be fragile/dialect-specific at this
@@ -422,6 +514,8 @@ def _handle_links(handler, payload):
 _ACTIONS = {
     "list": _handle_list,
     "create": _handle_create,
+    "ingest": _handle_ingest,
+    "finalize": _handle_finalize,
     "status": _handle_status,
     "thematic": _handle_thematic,
     "trend": _handle_trend,
@@ -447,4 +541,26 @@ class handler(BaseHTTPRequestHandler):
         if fn is None:
             send_json(self, 400, {"error": f"Unknown or missing action (expected one of {sorted(_ACTIONS)})"})
             return
+
+        # Per-org isolation (05 §4): derive the org from the session and verify
+        # crawl ownership before the handler runs. `resolve_org_id` returns None
+        # in dev/test (no session, no VERCEL) — no scoping, preserving the
+        # single-tenant behavior; in production an unauthenticated org-scoped
+        # request is rejected with 401.
+        self._org_id = None
+        if action in _ORG_SCOPED:
+            with SessionLocal() as db:
+                try:
+                    self._org_id = resolve_org_id(self, db)
+                except AuthError as e:
+                    send_json(self, e.status, {"error": e.message})
+                    return
+                if self._org_id is not None and action in _CRAWL_SCOPED:
+                    try:
+                        crawl_id = int(payload.get("crawlId"))
+                    except (TypeError, ValueError):
+                        crawl_id = None
+                    if crawl_id is not None and crawl_for_org(db, crawl_id, self._org_id) is None:
+                        send_json(self, 404, {"error": "Crawl not found."})
+                        return
         fn(self, payload)

@@ -96,6 +96,7 @@ def create_crawl(
     requests_per_second: float = 1.0,
     max_duration_minutes: int = 60,
     schedule_cron: str | None = None,
+    org_id: int | None = None,
 ) -> Crawl:
     """Creates a CrawlConfig row (folding fields with no dedicated column —
     max_depth/include_subdomains/patterns/seed_source/url_list/crawl_delay/
@@ -105,7 +106,11 @@ def create_crawl(
     new CrawlConfig and computes its first `next_run_at` — after this initial
     (manual) crawl, `worker/scheduler.py::enqueue_due_crawls()` takes over,
     reusing this same CrawlConfig for every subsequent scheduled run."""
-    project = get_or_create_default_project(db, root_url)
+    if org_id is not None:
+        from worker.access import get_or_create_project
+        project = get_or_create_project(db, org_id, root_url)
+    else:
+        project = get_or_create_default_project(db, root_url)
 
     scope_json = {
         "max_depth": max_depth,

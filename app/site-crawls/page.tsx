@@ -6,6 +6,7 @@ import { Card, EmptyState, PageHeader, ScoreCircle } from "@/components/ui";
 import { GlobeIcon, PlusIcon } from "@/components/icons";
 import { formatDate } from "@/lib/format";
 import { SCHEDULE_PRESETS } from "@/lib/schedulePresets";
+import { runPersistedCrawl } from "@/lib/crawl/persistedCrawl";
 
 interface CrawlSummary {
   id: number;
@@ -60,6 +61,7 @@ export default function SiteCrawlsPage() {
   const [customCron, setCustomCron] = useState("");
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<string | null>(null);
 
   async function loadCrawls() {
     try {
@@ -79,6 +81,7 @@ export default function SiteCrawlsPage() {
     if (!rootUrl.trim()) return;
     setStarting(true);
     setStartError(null);
+    setProgress("Starting crawl…");
     try {
       const scheduleCron =
         schedulePreset === "off"
@@ -95,10 +98,22 @@ export default function SiteCrawlsPage() {
         renderJs,
         scheduleCron,
       });
+      // Browser drives the crawl and streams each audited page into the DB
+      // (Vercel-only — no worker). Progress shows here until it finalizes.
+      setProgress("Discovering pages…");
+      await runPersistedCrawl({
+        crawlId: data.crawlId,
+        rootUrl: rootUrl.trim(),
+        maxPages,
+        maxDepth,
+        robotsMode,
+        onProgress: (p) => setProgress(`Auditing pages… ${p.done}/${p.discovered}`),
+      });
       router.push(`/site-crawls/${data.crawlId}`);
     } catch (err) {
-      setStartError(err instanceof Error ? err.message : "Failed to start crawl.");
+      setStartError(err instanceof Error ? err.message : "Failed to run crawl.");
       setStarting(false);
+      setProgress(null);
     }
   }
 
@@ -152,7 +167,7 @@ export default function SiteCrawlsPage() {
             className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg btn-gradient px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
           >
             <PlusIcon size={15} />
-            {starting ? "Starting…" : "Start Crawl"}
+            {starting ? "Crawling…" : "Start Crawl"}
           </button>
         </div>
         <label className="mt-3 flex items-center gap-2 text-sm text-[var(--seo-text)]">
@@ -188,10 +203,16 @@ export default function SiteCrawlsPage() {
           ) : null}
         </div>
         <p className="mt-2 text-xs text-[var(--seo-muted)]">
-          Max pages / depth (0 = homepage only). Crawls run in the background — the worker process
-          (<code className="font-mono">python -m worker</code>) must be running for a queued crawl
-          to progress. Rendering uses a real browser per page and is much slower than a raw fetch.
+          Max pages / depth (0 = homepage only). The crawl runs in your browser while this page is
+          open — keep the tab open until it finishes. Rendering uses a real browser per page and is
+          much slower than a raw fetch.
         </p>
+        {progress ? (
+          <p className="mt-2 flex items-center gap-2 text-xs text-[var(--seo-accent)]">
+            <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-[var(--seo-accent-border)] border-t-[var(--seo-accent)]" />
+            {progress}
+          </p>
+        ) : null}
         {startError ? <p className="mt-2 text-xs text-[var(--seo-error)]">{startError}</p> : null}
       </Card>
 

@@ -2,6 +2,8 @@
   "functions": {
     "api/audit-pipeline.py": { "maxDuration": 90 },
     "api/ai.py": { "maxDuration": 30 },
+    "api/analyze.py": { "maxDuration": 60 },
+    "api/auth.py": { "maxDuration": 15 },
     "api/export.py": { "maxDuration": 30 },
     "api/crawls.py": { "maxDuration": 30 },
     "api/api-keys.py": { "maxDuration": 30 }

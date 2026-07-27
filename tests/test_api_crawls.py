@@ -16,7 +16,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from worker import crawl_diff, queue as queue_module, site_audit
-from worker.db.models import Base, Crawl, CrawlConfig, Issue, Job, Link, Organization, Page, Project
+from worker.auth import create_session_token, hash_password
+from worker.db.models import Base, Crawl, CrawlConfig, Issue, Job, Link, Membership, Organization, Page, Project, User
 
 
 def _load(name, relative_path):
@@ -30,10 +31,13 @@ def _load(name, relative_path):
 crawls = _load("crawls_under_test", "api/crawls.py")
 
 
-def _mock_handler(body: dict):
+def _mock_handler(body: dict, cookie: str | None = None):
     encoded = json.dumps(body).encode()
     h = MagicMock()
-    h.headers = {"Content-Length": str(len(encoded))}
+    headers = {"Content-Length": str(len(encoded))}
+    if cookie:
+        headers["Cookie"] = cookie
+    h.headers = headers
     h.rfile = io.BytesIO(encoded)
     h.wfile = io.BytesIO()
     return h
@@ -95,8 +99,74 @@ def _project_id_of(session_factory, crawl_id) -> int:
 
 def test_all_actions_registered():
     assert set(crawls._ACTIONS) == {
-        "list", "create", "status", "thematic", "trend", "pages", "issues", "links", "compare", "setSchedule",
+        "list", "create", "ingest", "finalize", "status", "thematic", "trend",
+        "pages", "issues", "links", "compare", "setSchedule",
     }
+
+
+def test_ingest_requires_outcome(isolated_db):
+    # url present, outcome missing -> 400 before any DB write
+    h = _mock_handler({"action": "ingest", "crawlId": 1, "url": "https://example.com/"})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+    assert status == 400 and "outcome" in body["error"]
+
+
+def test_finalize_requires_crawl_id(isolated_db):
+    h = _mock_handler({"action": "finalize"})
+    crawls.handler.do_POST(h)
+    status, _ = _sent_status_and_body(h)
+    assert status == 400
+
+
+def _seed_user_org(session_factory, email: str):
+    """A user + their own org + one crawl — returns (user_id, crawl_id)."""
+    with session_factory() as db:
+        user = User(email=email, password_hash=hash_password("pw12345678"))
+        db.add(user); db.flush()
+        org = Organization(name=f"{email} org"); db.add(org); db.flush()
+        db.add(Membership(user_id=user.id, org_id=org.id, role="owner"))
+        project = Project(org_id=org.id, name="site", root_url=f"https://{email}.example")
+        db.add(project); db.flush()
+        config = CrawlConfig(project_id=project.id, source_type="homepage", robots_mode="respect", max_pages=50)
+        db.add(config); db.flush()
+        crawl = Crawl(project_id=project.id, crawl_config_id=config.id, status="completed", pages_crawled=1)
+        db.add(crawl); db.commit()
+        return user.id, crawl.id
+
+
+def test_org_isolation_list_and_cross_tenant_404(isolated_db):
+    """A logged-in user sees only their own crawls and cannot read another
+    org's crawl (404, no existence leak)."""
+    uid_a, crawl_a = _seed_user_org(isolated_db, "alice")
+    _uid_b, crawl_b = _seed_user_org(isolated_db, "bob")
+    cookie_a = f"sa_session={create_session_token(uid_a)}"
+
+    # Alice's list shows her crawl, not Bob's.
+    h = _mock_handler({"action": "list"}, cookie=cookie_a)
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+    assert status == 200
+    ids = {c["id"] for c in body["crawls"]}
+    assert crawl_a in ids and crawl_b not in ids
+
+    # Alice cannot read Bob's crawl by id.
+    h2 = _mock_handler({"action": "status", "crawlId": crawl_b}, cookie=cookie_a)
+    crawls.handler.do_POST(h2)
+    s2, _ = _sent_status_and_body(h2)
+    assert s2 == 404
+
+    # Alice can read her own.
+    h3 = _mock_handler({"action": "status", "crawlId": crawl_a}, cookie=cookie_a)
+    crawls.handler.do_POST(h3)
+    s3, _ = _sent_status_and_body(h3)
+    assert s3 == 200
+
+    # Alice cannot diff her crawl against Bob's via compareToId (no data leak).
+    h4 = _mock_handler({"action": "compare", "crawlId": crawl_a, "compareToId": crawl_b}, cookie=cookie_a)
+    crawls.handler.do_POST(h4)
+    s4, _ = _sent_status_and_body(h4)
+    assert s4 == 404
 
 
 def test_unknown_action_returns_400():
@@ -204,10 +274,12 @@ def test_trend_returns_project_history(isolated_db):
     assert body["trend"][0]["health_score"] == 60.0
 
 
-def _seed_page(session_factory, crawl_id, *, url, status_code=200, title=None, seo_score=None) -> int:
+def _seed_page(session_factory, crawl_id, *, url, status_code=200, title=None, seo_score=None,
+                meta_description=None, canonical_url=None, h1=None) -> int:
     with session_factory() as db:
         page = Page(crawl_id=crawl_id, url=url, normalized_url=url, status_code=status_code,
-                    title=title, seo_score=seo_score)
+                    title=title, seo_score=seo_score, meta_description=meta_description,
+                    canonical_url=canonical_url, h1=h1)
         db.add(page)
         db.commit()
         return page.id
@@ -215,7 +287,10 @@ def _seed_page(session_factory, crawl_id, *, url, status_code=200, title=None, s
 
 def test_pages_returns_paginated_results_with_severity_counts(isolated_db):
     crawl_id = _seed_crawl(isolated_db)
-    page_id = _seed_page(isolated_db, crawl_id, url="https://example.com/a", title="A", seo_score=80.0)
+    page_id = _seed_page(
+        isolated_db, crawl_id, url="https://example.com/a", title="A", seo_score=80.0,
+        meta_description="A's description", canonical_url="https://example.com/a", h1="Welcome to A",
+    )
     _seed_page(isolated_db, crawl_id, url="https://example.com/b", title="B", seo_score=90.0)
     with isolated_db() as db:
         db.add(Issue(crawl_id=crawl_id, page_id=page_id, issue_type="Missing alt text", severity="notice"))
@@ -232,9 +307,13 @@ def test_pages_returns_paginated_results_with_severity_counts(isolated_db):
     page_a = next(p for p in body["pages"] if p["url"] == "https://example.com/a")
     assert page_a["title"] == "A"
     assert page_a["seoScore"] == 80.0
+    assert page_a["metaDescription"] == "A's description"
+    assert page_a["canonicalUrl"] == "https://example.com/a"
+    assert page_a["h1"] == "Welcome to A"
     assert page_a["issueCounts"] == {"notice": 1, "warning": 1}
     page_b = next(p for p in body["pages"] if p["url"] == "https://example.com/b")
     assert page_b["issueCounts"] == {}
+    assert page_b["metaDescription"] is None
 
 
 def test_pages_search_filters_by_url_substring(isolated_db):
@@ -333,6 +412,22 @@ def test_issues_includes_page_url_or_null_for_sitewide(isolated_db):
     sitewide_issue = next(i for i in body["issues"] if i["issueType"] == "Sitewide issue")
     assert page_issue["pageUrl"] == "https://example.com/a"
     assert sitewide_issue["pageUrl"] is None
+
+
+def test_issues_filters_by_page_id(isolated_db):
+    crawl_id = _seed_crawl(isolated_db)
+    page_a = _seed_page(isolated_db, crawl_id, url="https://example.com/a")
+    page_b = _seed_page(isolated_db, crawl_id, url="https://example.com/b")
+    _seed_issue(isolated_db, crawl_id, page_id=page_a, issue_type="A's issue", severity="warning", category="Content")
+    _seed_issue(isolated_db, crawl_id, page_id=page_b, issue_type="B's issue", severity="warning", category="Content")
+
+    h = _mock_handler({"action": "issues", "crawlId": crawl_id, "pageId": page_a})
+    crawls.handler.do_POST(h)
+    status, body = _sent_status_and_body(h)
+
+    assert status == 200
+    assert body["total"] == 1
+    assert body["issues"][0]["issueType"] == "A's issue"
 
 
 def test_issues_pagination_math(isolated_db):

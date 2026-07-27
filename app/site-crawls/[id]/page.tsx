@@ -12,7 +12,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Card, PageHeader, ScoreCircle, TabBar } from "@/components/ui";
+import { Card, PageHeader, ScoreCircle } from "@/components/ui";
 import { GlobeIcon } from "@/components/icons";
 import { formatDate } from "@/lib/format";
 import { SCHEDULE_PRESETS, humanizeCron, presetIdForCron } from "@/lib/schedulePresets";
@@ -60,6 +60,9 @@ interface PageRow {
   url: string;
   statusCode: number | null;
   title: string | null;
+  metaDescription: string | null;
+  canonicalUrl: string | null;
+  h1: string | null;
   seoScore: number | null;
   fetchedAt: string | null;
   issueCounts: Record<string, number>;
@@ -158,8 +161,38 @@ interface TrendPoint {
 
 const POLL_INTERVAL_MS = 3000;
 const FINISHED_STATUSES = new Set(["completed", "failed"]);
-const TABS = ["Overview", "Pages", "Issues", "Links", "Compare"] as const;
+const TABS = ["Overview", "Pages", "Issues", "Site-wide", "Links", "Compare"] as const;
 type Tab = (typeof TABS)[number];
+
+// Site-wide analysis (api/analyze.py) — the "brains" folded in from the rebuild.
+interface SiteIssue {
+  issueType: string;
+  category: string;
+  severity: string;
+  impactScore: number | null;
+  effortLevel: string | null;
+  what: string;
+  why: string;
+  fix: string;
+  affectedUrls: string[];
+  affectedCount: number;
+}
+interface SitewideResponse {
+  pageCount: number;
+  linkCount: number;
+  issueCount: number;
+  issues: SiteIssue[];
+}
+interface CrawlGraphResponse {
+  root: string;
+  maxDepth: number;
+  avgDepth: number;
+  reachableCount: number;
+  pagesPerDepth: Record<string, number>;
+  unreachableUrls: string[];
+  deepestPages: { url: string; depth: number }[];
+  issues: SiteIssue[];
+}
 
 const SEVERITY_STYLE: Record<string, { color: string; bg: string }> = {
   error: { color: "var(--seo-error)", bg: "var(--seo-error-bg)" },
@@ -182,6 +215,267 @@ function SeverityBadge({ severity }: { severity: string }) {
     <span className="pill capitalize" style={{ color: s.color, backgroundColor: s.bg }}>
       {severity}
     </span>
+  );
+}
+
+/** Small colored square + text instead of a rounded pill badge — used inside
+ * the dense Pages/Issues/Links grids specifically (a Screaming-Frog-style
+ * data grid reads status via muted colored text, not big colorful chips).
+ * SeverityChip/SeverityBadge (pill-based) stay as-is for the Overview tab's
+ * thematic report and the filter-toggle buttons, which aren't grid content. */
+function StatusDot({ color }: { color: string }) {
+  return <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: color }} />;
+}
+
+const GRID_TH =
+  "border border-[var(--table-row-border)] bg-[var(--table-header-bg)] px-2 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--seo-muted)]";
+const GRID_TD = "border border-[var(--table-row-border)] px-2 py-1 align-top text-xs text-[var(--seo-text)]";
+
+/** One flat, underlined, count-labeled tab strip — the Screaming-Frog-style
+ * counterpart to `TabBar` (components/ui.tsx), scoped to this page only:
+ * TabBar's rounded-pill look is shared across the single-URL detail page too
+ * (components/detail/*View.tsx), so it isn't touched. */
+function SpreadsheetTabBar({
+  tabs,
+  active,
+  onChange,
+}: {
+  tabs: { key: Tab; label: string; count?: number | null }[];
+  active: Tab;
+  onChange: (tab: Tab) => void;
+}) {
+  return (
+    <div className="mb-3 flex gap-5 border-b border-[var(--seo-border)]">
+      {tabs.map((t) => {
+        const isActive = t.key === active;
+        return (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => onChange(t.key)}
+            className="relative pb-2 text-xs font-semibold uppercase tracking-wide"
+            style={{ color: isActive ? "var(--seo-accent)" : "var(--seo-muted)" }}
+          >
+            {t.label}
+            {t.count != null ? <span className="ml-1.5 tabular-nums">({t.count.toLocaleString()})</span> : null}
+            {isActive ? <span className="absolute inset-x-0 -bottom-px h-0.5 bg-[var(--seo-accent)]" /> : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+type SelectedRow =
+  | { type: "page"; data: PageRow }
+  | { type: "issue"; data: IssueRow }
+  | { type: "link"; data: LinkRow };
+
+/** Fetches this specific page's own issues (via the "issues" action's pageId
+ * filter) so the detail panel can show the real, specific findings for a
+ * selected page — not just the severity counts already on hand from the
+ * pages grid. Re-fetches whenever a different page is selected. */
+function usePageIssues(crawlId: number, pageId: number | null) {
+  const [issues, setIssues] = useState<IssueRow[] | null>(null);
+
+  useEffect(() => {
+    if (pageId == null) {
+      setIssues(null);
+      return;
+    }
+    let cancelled = false;
+    setIssues(null);
+    postCrawlsAction<IssuesResponse>({ action: "issues", crawlId, pageId, pageSize: 50 })
+      .then((data) => {
+        if (!cancelled) setIssues(data.issues);
+      })
+      .catch(() => {
+        if (!cancelled) setIssues([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [crawlId, pageId]);
+
+  return issues;
+}
+
+// Issue types the AI Content Agent can draft a fix for (mirrors
+// modules/content_agent.py SUPPORTED_ISSUE_TYPES — title/meta only).
+const AI_DRAFTABLE = /title|description|meta/i;
+
+function AiDraftButton({ issue }: { issue: IssueRow }) {
+  const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState<{ draftText: string; confidence: number | null; suggestionType: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run() {
+    setBusy(true);
+    setError(null);
+    setDraft(null);
+    try {
+      const res = await fetch("/api/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "content-draft", issueType: issue.issueType, url: issue.pageUrl }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) throw new Error(data.error || "Could not generate a draft.");
+      setDraft({ draftText: data.draftText, confidence: data.confidence ?? null, suggestionType: data.suggestionType });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not generate a draft.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 border-t border-[var(--seo-border)] pt-2.5">
+      <button
+        type="button"
+        onClick={run}
+        disabled={busy}
+        className="inline-flex items-center gap-1.5 rounded-lg btn-gradient px-2.5 py-1.5 text-[12px] font-semibold text-white disabled:opacity-60"
+      >
+        <svg width={13} height={13} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 2l1.9 5.1L19 9l-5.1 1.9L12 16l-1.9-5.1L5 9l5.1-1.9L12 2z" />
+        </svg>
+        {busy ? "Drafting…" : draft ? "Redraft with AI" : "Draft a fix with AI"}
+      </button>
+      {error ? <p className="mt-1.5 text-[var(--seo-error)]">{error}</p> : null}
+      {draft ? (
+        <div className="mt-2 rounded-[var(--seo-radius-sm)] border border-[var(--seo-accent-border)] bg-[var(--seo-accent-light)] p-2.5">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--seo-accent)]">
+              Suggested {draft.suggestionType.replace(/_/g, " ")}
+            </span>
+            {draft.confidence != null ? (
+              <span className="text-[11px] tabular-nums text-[var(--seo-muted)]">
+                confidence {Math.round(draft.confidence * 100)}%
+              </span>
+            ) : null}
+          </div>
+          <p className="text-[13px] text-[var(--seo-heading)]">{draft.draftText}</p>
+          <p className="mt-1 text-[11px] text-[var(--seo-muted)]">Draft only — review before applying it to your page.</p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function DetailPanel({
+  crawlId,
+  selected,
+  onViewPage,
+}: {
+  crawlId: number;
+  selected: SelectedRow | null;
+  onViewPage: (url: string) => void;
+}) {
+  const pageIssues = usePageIssues(crawlId, selected?.type === "page" ? selected.data.id : null);
+
+  if (!selected) {
+    return (
+      <Card>
+        <p className="text-xs text-[var(--seo-muted)]">Select a row above to see its full details here.</p>
+      </Card>
+    );
+  }
+
+  if (selected.type === "page") {
+    const p = selected.data;
+    return (
+      <Card>
+        <h3 className="mb-2.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--seo-muted)]">Page detail</h3>
+        <div className="flex flex-col gap-1.5 text-xs">
+          <div><span className="text-[var(--seo-muted)]">URL </span><span className="break-all font-mono text-[var(--seo-heading)]">{p.url}</span></div>
+          <div><span className="text-[var(--seo-muted)]">Title </span>{p.title || "—"}</div>
+          <div><span className="text-[var(--seo-muted)]">Meta description </span>{p.metaDescription || "—"}</div>
+          <div><span className="text-[var(--seo-muted)]">Canonical </span><span className="break-all font-mono">{p.canonicalUrl || "—"}</span></div>
+          <div><span className="text-[var(--seo-muted)]">H1 </span>{p.h1 || "—"}</div>
+          <div className="mt-1">
+            <span className="text-[var(--seo-muted)]">Issues on this page</span>
+            {pageIssues === null ? (
+              <p className="mt-1 text-[var(--seo-muted)]">Loading…</p>
+            ) : pageIssues.length === 0 ? (
+              <p className="mt-1 text-[var(--seo-success)]">None</p>
+            ) : (
+              <ul className="mt-1 flex flex-col gap-1">
+                {pageIssues.map((iss) => (
+                  <li key={iss.id} className="flex items-start gap-1.5">
+                    <StatusDot color={(SEVERITY_STYLE[iss.severity] ?? SEVERITY_STYLE.notice).color} />
+                    <span>
+                      <span className="font-medium text-[var(--seo-heading)]">{iss.issueType}</span>
+                      <span className="text-[var(--seo-text-light)]"> — {iss.recommendation}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  if (selected.type === "issue") {
+    const i = selected.data;
+    return (
+      <Card>
+        <h3 className="mb-2.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--seo-muted)]">Issue detail</h3>
+        <div className="flex flex-col gap-1.5 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <SeverityBadge severity={i.severity} />
+            <span className="font-medium text-[var(--seo-heading)]">{i.issueType}</span>
+          </div>
+          <div><span className="text-[var(--seo-muted)]">Category </span>{i.category}</div>
+          <div><span className="text-[var(--seo-muted)]">Recommendation </span>{i.recommendation}</div>
+          <div>
+            <span className="text-[var(--seo-muted)]">Impact </span>{i.impactScore ?? "—"}
+            <span className="ml-4 text-[var(--seo-muted)]">Effort </span>{i.effortLevel || "—"}
+          </div>
+          {i.pageUrl ? (
+            <button
+              type="button"
+              onClick={() => onViewPage(i.pageUrl!)}
+              className="mt-1 self-start break-all font-mono text-[var(--seo-accent)] hover:underline"
+            >
+              View page: {i.pageUrl}
+            </button>
+          ) : null}
+          {AI_DRAFTABLE.test(i.issueType) ? <AiDraftButton issue={i} /> : null}
+        </div>
+      </Card>
+    );
+  }
+
+  const l = selected.data;
+  return (
+    <Card>
+      <h3 className="mb-2.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--seo-muted)]">Link detail</h3>
+      <div className="flex flex-col gap-1.5 text-xs">
+        <div><span className="text-[var(--seo-muted)]">Target </span><span className="break-all font-mono">{l.targetUrl}</span></div>
+        <div><span className="text-[var(--seo-muted)]">Anchor text </span>{l.anchorText || "—"}</div>
+        <div>
+          <span className="text-[var(--seo-muted)]">Type </span>{LINK_TYPE_LABELS[l.linkType] || l.linkType}
+          <span className="ml-4 text-[var(--seo-muted)]">Location </span>{l.domLocation || "—"}
+        </div>
+        <div>
+          <span className="text-[var(--seo-muted)]">Follow </span>{l.isNofollow ? "Nofollow" : "Dofollow"}
+          <span className="ml-4 text-[var(--seo-muted)]">Status </span>
+          {l.isBroken ? `Broken (${l.statusCode ?? "—"})` : (l.statusCode ?? "Not checked")}
+        </div>
+        {l.pageUrl ? (
+          <button
+            type="button"
+            onClick={() => onViewPage(l.pageUrl!)}
+            className="mt-1 self-start break-all font-mono text-[var(--seo-accent)] hover:underline"
+          >
+            From page: {l.pageUrl}
+          </button>
+        ) : null}
+      </div>
+    </Card>
   );
 }
 
@@ -228,6 +522,17 @@ async function postCrawlsAction<T>(body: Record<string, unknown>): Promise<T> {
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "Request failed.");
+  return data as T;
+}
+
+async function postAnalyzeAction<T>(action: string, crawlId: number): Promise<T> {
+  const res = await fetch("/api/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, crawlId }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Analysis failed.");
   return data as T;
 }
 
@@ -453,9 +758,21 @@ function OverviewTab({
   );
 }
 
-function PagesTab({ crawlId }: { crawlId: number }) {
-  const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+function PagesTab({
+  crawlId,
+  initialSearch,
+  selectedId,
+  onSelect,
+}: {
+  crawlId: number;
+  initialSearch?: string;
+  selectedId: number | null;
+  onSelect: (row: PageRow) => void;
+}) {
+  // Fresh mount every time this tab becomes active (see the conditional
+  // render below) picks up whatever initialSearch a "View page" jump set.
+  const [search, setSearch] = useState(initialSearch ?? "");
+  const [debouncedSearch, setDebouncedSearch] = useState(initialSearch ?? "");
   const [page, setPage] = useState(1);
   const pageSize = 25;
 
@@ -496,44 +813,61 @@ function PagesTab({ crawlId }: { crawlId: number }) {
         <p className="text-xs text-[var(--seo-muted)]">No pages found.</p>
       ) : null}
       {data && data.pages.length > 0 ? (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
+        <div className="max-h-[420px] overflow-auto">
+          <table className="w-full border-collapse text-left text-sm">
             <thead>
-              <tr className="border-b border-[var(--seo-border)] text-xs text-[var(--seo-muted)]">
-                <th className="pb-2 pr-3 font-medium">URL</th>
-                <th className="pb-2 pr-3 font-medium">Status</th>
-                <th className="pb-2 pr-3 font-medium">Title</th>
-                <th className="pb-2 pr-3 font-medium">Score</th>
-                <th className="pb-2 pr-3 font-medium">Issues</th>
-                <th className="pb-2 font-medium">Crawled</th>
+              <tr className="sticky top-0 z-10">
+                <th className={GRID_TH}>URL</th>
+                <th className={GRID_TH}>Status</th>
+                <th className={GRID_TH}>Title</th>
+                <th className={GRID_TH}>Score</th>
+                <th className={GRID_TH}>Issues</th>
+                <th className={GRID_TH}>Crawled</th>
               </tr>
             </thead>
             <tbody>
-              {data.pages.map((p) => (
-                <tr key={p.id} className="border-b border-[var(--seo-border)] last:border-0">
-                  <td
-                    className="max-w-xs truncate py-2 pr-3 font-mono text-xs text-[var(--seo-heading)]"
-                    title={p.url}
+              {data.pages.map((p) => {
+                const isSelected = selectedId === p.id;
+                const statusColor =
+                  p.statusCode == null ? "var(--seo-muted)" : p.statusCode >= 400 ? "var(--seo-error)" : "var(--seo-success)";
+                return (
+                  <tr
+                    key={p.id}
+                    onClick={() => onSelect(p)}
+                    className="cursor-pointer hover:bg-[var(--table-row-hover)]"
+                    style={isSelected ? { backgroundColor: "var(--seo-accent-light)" } : undefined}
                   >
-                    {p.url}
-                  </td>
-                  <td className="py-2 pr-3 text-xs text-[var(--seo-text)]">{p.statusCode ?? "—"}</td>
-                  <td className="max-w-[200px] truncate py-2 pr-3 text-xs text-[var(--seo-text)]" title={p.title || ""}>
-                    {p.title || "—"}
-                  </td>
-                  <td className="py-2 pr-3 text-xs tabular-nums text-[var(--seo-text)]">
-                    {p.seoScore != null ? Math.round(p.seoScore) : "—"}
-                  </td>
-                  <td className="py-2 pr-3">
-                    <div className="flex flex-wrap gap-1">
-                      {Object.entries(p.issueCounts).map(([sev, count]) => (
-                        <SeverityChip key={sev} severity={sev} count={count} />
-                      ))}
-                    </div>
-                  </td>
-                  <td className="py-2 text-xs text-[var(--seo-muted)]">{formatDate(p.fetchedAt)}</td>
-                </tr>
-              ))}
+                    <td className={`${GRID_TD} max-w-xs truncate font-mono text-[var(--seo-heading)]`} title={p.url}>
+                      {p.url}
+                    </td>
+                    <td className={GRID_TD}>
+                      <span className="inline-flex items-center gap-1.5 tabular-nums">
+                        <StatusDot color={statusColor} />
+                        {p.statusCode ?? "—"}
+                      </span>
+                    </td>
+                    <td className={`${GRID_TD} max-w-[220px] truncate`} title={p.title || ""}>
+                      {p.title || "—"}
+                    </td>
+                    <td className={`${GRID_TD} tabular-nums`}>{p.seoScore != null ? Math.round(p.seoScore) : "—"}</td>
+                    <td className={GRID_TD}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {Object.entries(p.issueCounts).length === 0 ? (
+                          <span className="text-[var(--seo-success)]">0</span>
+                        ) : (
+                          Object.entries(p.issueCounts).map(([sev, count]) => (
+                            <span key={sev} className="inline-flex items-center gap-1 tabular-nums" style={{ color: (SEVERITY_STYLE[sev] ?? SEVERITY_STYLE.notice).color }}>
+                              <StatusDot color={(SEVERITY_STYLE[sev] ?? SEVERITY_STYLE.notice).color} />
+                              {count}
+                            </span>
+                          ))
+                        )}
+                      </div>
+                    </td>
+                    <td className={`${GRID_TD} text-[var(--seo-muted)]`}>{formatDate(p.fetchedAt)}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -543,7 +877,15 @@ function PagesTab({ crawlId }: { crawlId: number }) {
   );
 }
 
-function IssuesTab({ crawlId }: { crawlId: number }) {
+function IssuesTab({
+  crawlId,
+  selectedId,
+  onSelect,
+}: {
+  crawlId: number;
+  selectedId: number | null;
+  onSelect: (row: IssueRow) => void;
+}) {
   const [severity, setSeverity] = useState("");
   const [category, setCategory] = useState("");
   const [search, setSearch] = useState("");
@@ -625,21 +967,53 @@ function IssuesTab({ crawlId }: { crawlId: number }) {
       {data && data.issues.length === 0 ? (
         <p className="text-xs text-[var(--seo-muted)]">No issues found.</p>
       ) : null}
-      <div className="flex flex-col gap-2">
-        {(data?.issues || []).map((issue) => (
-          <div key={issue.id} className="rounded-lg border border-[var(--seo-border)] p-2.5">
-            <div className="flex flex-wrap items-center gap-2">
-              <SeverityBadge severity={issue.severity} />
-              <span className="text-sm font-medium text-[var(--seo-heading)]">{issue.issueType}</span>
-              <span className="text-xs text-[var(--seo-muted)]">{issue.category}</span>
-              <span className="ml-auto font-mono text-xs text-[var(--seo-muted)]" title={issue.pageUrl || undefined}>
-                {issue.pageUrl ? issue.pageUrl.replace(/^https?:\/\//, "") : "Sitewide"}
-              </span>
-            </div>
-            <p className="mt-1 text-xs text-[var(--seo-text-light)]">{issue.recommendation}</p>
-          </div>
-        ))}
-      </div>
+      {data && data.issues.length > 0 ? (
+        <div className="max-h-[420px] overflow-auto">
+          <table className="w-full border-collapse text-left text-sm">
+            <thead>
+              <tr className="sticky top-0 z-10">
+                <th className={GRID_TH}>Severity</th>
+                <th className={GRID_TH}>Issue</th>
+                <th className={GRID_TH}>Category</th>
+                <th className={GRID_TH}>Impact</th>
+                <th className={GRID_TH}>Page</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.issues.map((issue) => {
+                const isSelected = selectedId === issue.id;
+                const color = (SEVERITY_STYLE[issue.severity] ?? SEVERITY_STYLE.notice).color;
+                return (
+                  <tr
+                    key={issue.id}
+                    onClick={() => onSelect(issue)}
+                    className="cursor-pointer hover:bg-[var(--table-row-hover)]"
+                    style={isSelected ? { backgroundColor: "var(--seo-accent-light)" } : undefined}
+                  >
+                    <td className={GRID_TD}>
+                      <span className="inline-flex items-center gap-1.5 capitalize" style={{ color }}>
+                        <StatusDot color={color} />
+                        {issue.severity}
+                      </span>
+                    </td>
+                    <td className={`${GRID_TD} max-w-xs truncate text-[var(--seo-heading)]`} title={issue.issueType}>
+                      {issue.issueType}
+                    </td>
+                    <td className={GRID_TD}>{issue.category}</td>
+                    <td className={`${GRID_TD} tabular-nums`}>{issue.impactScore ?? "—"}</td>
+                    <td
+                      className={`${GRID_TD} max-w-[220px] truncate font-mono text-[var(--seo-muted)]`}
+                      title={issue.pageUrl || undefined}
+                    >
+                      {issue.pageUrl || "Sitewide"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
       {data ? <PaginationControls page={data.page} totalPages={totalPages} onChange={setPage} /> : null}
     </Card>
   );
@@ -654,7 +1028,15 @@ const LINK_TYPE_LABELS: Record<string, string> = {
   javascript: "JS",
 };
 
-function LinksTab({ crawlId }: { crawlId: number }) {
+function LinksTab({
+  crawlId,
+  selectedId,
+  onSelect,
+}: {
+  crawlId: number;
+  selectedId: number | null;
+  onSelect: (row: LinkRow) => void;
+}) {
   const [linkType, setLinkType] = useState("");
   const [brokenOnly, setBrokenOnly] = useState(false);
   const [search, setSearch] = useState("");
@@ -750,65 +1132,60 @@ function LinksTab({ crawlId }: { crawlId: number }) {
         <p className="text-xs text-[var(--seo-muted)]">No links found.</p>
       ) : null}
       {data && data.links.length > 0 ? (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
+        <div className="max-h-[420px] overflow-auto">
+          <table className="w-full border-collapse text-left text-sm">
             <thead>
-              <tr className="border-b border-[var(--seo-border)] text-xs text-[var(--seo-muted)]">
-                <th className="pb-2 pr-3 font-medium">Target URL</th>
-                <th className="pb-2 pr-3 font-medium">Type</th>
-                <th className="pb-2 pr-3 font-medium">Anchor text</th>
-                <th className="pb-2 pr-3 font-medium">Location</th>
-                <th className="pb-2 pr-3 font-medium">Follow</th>
-                <th className="pb-2 pr-3 font-medium">Status</th>
-                <th className="pb-2 font-medium">From page</th>
+              <tr className="sticky top-0 z-10">
+                <th className={GRID_TH}>Target URL</th>
+                <th className={GRID_TH}>Type</th>
+                <th className={GRID_TH}>Anchor text</th>
+                <th className={GRID_TH}>Location</th>
+                <th className={GRID_TH}>Follow</th>
+                <th className={GRID_TH}>Status</th>
+                <th className={GRID_TH}>From page</th>
               </tr>
             </thead>
             <tbody>
-              {data.links.map((l) => (
-                <tr key={l.id} className="border-b border-[var(--seo-border)] last:border-0">
-                  <td
-                    className="max-w-xs truncate py-2 pr-3 font-mono text-xs text-[var(--seo-heading)]"
-                    title={l.targetUrl}
+              {data.links.map((l) => {
+                const isSelected = selectedId === l.id;
+                const followColor = l.isNofollow ? "var(--seo-warning)" : "var(--seo-success)";
+                const statusColor = l.isBroken ? "var(--seo-error)" : l.statusCode != null ? "var(--seo-success)" : "var(--seo-muted)";
+                return (
+                  <tr
+                    key={l.id}
+                    onClick={() => onSelect(l)}
+                    className="cursor-pointer hover:bg-[var(--table-row-hover)]"
+                    style={isSelected ? { backgroundColor: "var(--seo-accent-light)" } : undefined}
                   >
-                    {l.targetUrl}
-                  </td>
-                  <td className="py-2 pr-3 text-xs text-[var(--seo-text)]">
-                    {LINK_TYPE_LABELS[l.linkType] || l.linkType}
-                  </td>
-                  <td className="max-w-[200px] truncate py-2 pr-3 text-xs text-[var(--seo-text)]" title={l.anchorText || ""}>
-                    {l.anchorText || "—"}
-                  </td>
-                  <td className="py-2 pr-3 text-xs text-[var(--seo-text)]">{l.domLocation || "—"}</td>
-                  <td className="py-2 pr-3">
-                    <span
-                      className="pill"
-                      style={{
-                        color: l.isNofollow ? "var(--seo-warning)" : "var(--seo-muted)",
-                        backgroundColor: l.isNofollow ? "var(--seo-warning-bg)" : "var(--seo-card-hover)",
-                      }}
-                    >
-                      {l.isNofollow ? "Nofollow" : "Dofollow"}
-                    </span>
-                  </td>
-                  <td className="py-2 pr-3 text-xs tabular-nums">
-                    {l.isBroken ? (
-                      <span className="pill" style={{ color: "var(--seo-error)", backgroundColor: "var(--seo-error-bg)" }}>
-                        {l.statusCode ?? "Broken"}
+                    <td className={`${GRID_TD} max-w-xs truncate font-mono text-[var(--seo-heading)]`} title={l.targetUrl}>
+                      {l.targetUrl}
+                    </td>
+                    <td className={GRID_TD}>{LINK_TYPE_LABELS[l.linkType] || l.linkType}</td>
+                    <td className={`${GRID_TD} max-w-[200px] truncate`} title={l.anchorText || ""}>
+                      {l.anchorText || "—"}
+                    </td>
+                    <td className={GRID_TD}>{l.domLocation || "—"}</td>
+                    <td className={GRID_TD}>
+                      <span className="inline-flex items-center gap-1.5" style={{ color: followColor }}>
+                        <StatusDot color={followColor} />
+                        {l.isNofollow ? "Nofollow" : "Dofollow"}
                       </span>
-                    ) : l.statusCode != null ? (
-                      <span className="text-[var(--seo-text)]">{l.statusCode}</span>
-                    ) : (
-                      <span className="text-[var(--seo-muted)]">Not checked</span>
-                    )}
-                  </td>
-                  <td
-                    className="max-w-[200px] truncate py-2 font-mono text-xs text-[var(--seo-muted)]"
-                    title={l.pageUrl || undefined}
-                  >
-                    {l.pageUrl || "—"}
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td className={`${GRID_TD} tabular-nums`}>
+                      <span className="inline-flex items-center gap-1.5" style={{ color: statusColor }}>
+                        <StatusDot color={statusColor} />
+                        {l.isBroken ? `Broken (${l.statusCode ?? "—"})` : (l.statusCode ?? "Not checked")}
+                      </span>
+                    </td>
+                    <td
+                      className={`${GRID_TD} max-w-[200px] truncate font-mono text-[var(--seo-muted)]`}
+                      title={l.pageUrl || undefined}
+                    >
+                      {l.pageUrl || "—"}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -996,6 +1373,175 @@ function CompareTab({ crawlId, rootUrl }: { crawlId: number; rootUrl: string | n
   );
 }
 
+function humanizeType(t: string): string {
+  return t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function MiniStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-[var(--seo-radius)] border border-[var(--seo-border)] bg-[var(--seo-card-bg)] px-3.5 py-3">
+      <div className="text-xl font-bold tabular-nums text-[var(--seo-heading)]">{value.toLocaleString()}</div>
+      <div className="text-[11px] text-[var(--seo-muted)]">{label}</div>
+    </div>
+  );
+}
+
+function SiteIssueCard({ issue }: { issue: SiteIssue }) {
+  const style = SEVERITY_STYLE[issue.severity] ?? SEVERITY_STYLE.notice;
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-[var(--seo-radius)] border border-[var(--seo-border)] bg-[var(--seo-card-bg)]">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-3 px-4 py-3 text-left"
+      >
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold capitalize" style={{ color: style.color }}>
+          <StatusDot color={style.color} />
+          {issue.severity}
+        </span>
+        <span className="text-sm font-semibold text-[var(--seo-heading)]">{humanizeType(issue.issueType)}</span>
+        <span className="hidden text-xs text-[var(--seo-muted)] sm:inline">{issue.category}</span>
+        <span className="ml-auto shrink-0 text-xs tabular-nums text-[var(--seo-muted)]">
+          {issue.affectedCount} URL{issue.affectedCount === 1 ? "" : "s"}
+        </span>
+      </button>
+      {open ? (
+        <div className="flex flex-col gap-2 border-t border-[var(--seo-border)] px-4 py-3 text-[13px] text-[var(--seo-text)]">
+          <div><span className="font-semibold text-[var(--seo-subheading)]">What: </span>{issue.what}</div>
+          <div><span className="font-semibold text-[var(--seo-subheading)]">Why it matters: </span>{issue.why}</div>
+          <div><span className="font-semibold text-[var(--seo-subheading)]">How to fix: </span>{issue.fix}</div>
+          {issue.affectedUrls.length > 0 ? (
+            <div>
+              <span className="font-semibold text-[var(--seo-subheading)]">Affected pages:</span>
+              <ul className="mt-1 flex flex-col gap-0.5">
+                {issue.affectedUrls.slice(0, 8).map((u) => (
+                  <li key={u} className="truncate font-mono text-xs text-[var(--seo-muted)]" title={u}>{u}</li>
+                ))}
+                {issue.affectedUrls.length > 8 ? (
+                  <li className="text-xs text-[var(--seo-muted)]">+{issue.affectedUrls.length - 8} more</li>
+                ) : null}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SitewideTab({ crawlId }: { crawlId: number }) {
+  const [sitewide, setSitewide] = useState<SitewideResponse | null>(null);
+  const [graph, setGraph] = useState<CrawlGraphResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    Promise.all([
+      postAnalyzeAction<SitewideResponse>("sitewide", crawlId),
+      postAnalyzeAction<CrawlGraphResponse>("crawl-graph", crawlId),
+    ])
+      .then(([sw, g]) => {
+        if (!cancelled) { setSitewide(sw); setGraph(g); }
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to run analysis.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [crawlId]);
+
+  if (loading) {
+    return <Card><p className="text-xs text-[var(--seo-muted)]">Running site-wide analysis…</p></Card>;
+  }
+  if (error) {
+    return <Card><p className="text-xs text-[var(--seo-error)]">{error}</p></Card>;
+  }
+
+  const issues = sitewide?.issues ?? [];
+  const depthIssues = graph?.issues ?? [];
+  const perDepth = graph ? Object.entries(graph.pagesPerDepth) : [];
+  const maxPerDepth = perDepth.length ? Math.max(...perDepth.map(([, c]) => c)) : 1;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <MiniStat label="Pages analyzed" value={sitewide?.pageCount ?? 0} />
+        <MiniStat label="Links seen" value={sitewide?.linkCount ?? 0} />
+        <MiniStat label="Site-wide issues" value={sitewide?.issueCount ?? 0} />
+        <MiniStat label="Max click depth" value={graph?.maxDepth ?? 0} />
+      </div>
+
+      <Card>
+        <h3 className="mb-3 text-sm font-semibold text-[var(--seo-heading)]">Site-wide issues</h3>
+        {issues.length === 0 ? (
+          <p className="text-xs text-[var(--seo-muted)]">
+            No site-wide issues found — no duplicate titles, descriptions, orphan pages, redirect loops,
+            or broken internal links across the crawl.
+          </p>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {issues.map((iss, i) => <SiteIssueCard key={`${iss.issueType}-${i}`} issue={iss} />)}
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <h3 className="mb-1 text-sm font-semibold text-[var(--seo-heading)]">Crawl depth</h3>
+        <p className="mb-3 text-xs text-[var(--seo-muted)]">
+          How many clicks each page sits from the homepage — deep pages are harder for users and search engines to reach.
+        </p>
+        {graph ? (
+          <>
+            <div className="flex flex-col gap-1.5">
+              {perDepth
+                .sort((a, b) => Number(a[0]) - Number(b[0]))
+                .map(([depth, count]) => (
+                  <div key={depth} className="flex items-center gap-2 text-xs">
+                    <span className="w-16 shrink-0 text-[var(--seo-muted)]">Depth {depth}</span>
+                    <div className="h-4 flex-1 overflow-hidden rounded bg-[var(--seo-card-hover)]">
+                      <div className="h-4 rounded" style={{ width: `${(count / maxPerDepth) * 100}%`, background: "var(--seo-gradient)" }} />
+                    </div>
+                    <span className="w-10 shrink-0 text-right tabular-nums text-[var(--seo-text)]">{count}</span>
+                  </div>
+                ))}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 text-xs">
+              <span><span className="text-[var(--seo-muted)]">Average depth: </span><span className="font-semibold tabular-nums text-[var(--seo-heading)]">{graph.avgDepth}</span></span>
+              <span><span className="text-[var(--seo-muted)]">Reachable pages: </span><span className="font-semibold tabular-nums text-[var(--seo-heading)]">{graph.reachableCount}</span></span>
+            </div>
+            {graph.unreachableUrls.length > 0 ? (
+              <div className="mt-3">
+                <p className="text-xs font-semibold text-[var(--seo-subheading)]">
+                  Orphan / unreachable pages ({graph.unreachableUrls.length})
+                </p>
+                <ul className="mt-1 flex flex-col gap-0.5">
+                  {graph.unreachableUrls.slice(0, 8).map((u) => (
+                    <li key={u} className="truncate font-mono text-xs text-[var(--seo-muted)]" title={u}>{u}</li>
+                  ))}
+                  {graph.unreachableUrls.length > 8 ? (
+                    <li className="text-xs text-[var(--seo-muted)]">+{graph.unreachableUrls.length - 8} more</li>
+                  ) : null}
+                </ul>
+              </div>
+            ) : null}
+            {depthIssues.length > 0 ? (
+              <div className="mt-3 flex flex-col gap-2">
+                {depthIssues.map((iss, i) => <SiteIssueCard key={`depth-${i}`} issue={iss} />)}
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </Card>
+    </div>
+  );
+}
+
 export default function CrawlDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -1017,6 +1563,27 @@ export default function CrawlDetailPage() {
   const [pollCount, setPollCount] = useState(0);
   const themesLoadedFor = useRef<number | null>(null);
 
+  // Unfiltered totals for the tab-strip counts (Pages/Issues/Links), fetched
+  // once when the crawl completes — independent of whatever filters are
+  // active inside each tab, so "Issues (58)" always reads the full count.
+  const [tabCounts, setTabCounts] = useState<{ pages: number | null; issues: number | null; links: number | null }>({
+    pages: null,
+    issues: null,
+    links: null,
+  });
+  const [selectedRow, setSelectedRow] = useState<SelectedRow | null>(null);
+  const [pagesInitialSearch, setPagesInitialSearch] = useState<string | undefined>(undefined);
+
+  function selectTab(tab: Tab) {
+    setSelectedRow(null);
+    setActiveTab(tab);
+  }
+
+  function viewPage(url: string) {
+    setPagesInitialSearch(url);
+    selectTab("Pages");
+  }
+
   useEffect(() => {
     if (!Number.isFinite(crawlId)) return;
     let cancelled = false;
@@ -1036,6 +1603,15 @@ export default function CrawlDetailPage() {
             crawlId,
           });
           if (!cancelled) setThemes(themeData.themes);
+
+          const [pagesTotal, issuesTotal, linksTotal] = await Promise.all([
+            postCrawlsAction<PagesResponse>({ action: "pages", crawlId, page: 1, pageSize: 1 }),
+            postCrawlsAction<IssuesResponse>({ action: "issues", crawlId, page: 1, pageSize: 1 }),
+            postCrawlsAction<LinksResponse>({ action: "links", crawlId, page: 1, pageSize: 1 }),
+          ]);
+          if (!cancelled) {
+            setTabCounts({ pages: pagesTotal.total, issues: issuesTotal.total, links: linksTotal.total });
+          }
         }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load crawl status.");
@@ -1119,13 +1695,53 @@ export default function CrawlDetailPage() {
           {/* Pages/Issues browsing only makes sense once the crawl has
               produced final results — matches the existing gate for the
               Overview scores/thematic report, not a new restriction. */}
-          <TabBar tabs={TABS} active={activeTab} onChange={setActiveTab} />
+          <SpreadsheetTabBar
+            tabs={[
+              { key: "Overview", label: "Overview" },
+              { key: "Pages", label: "Pages", count: tabCounts.pages },
+              { key: "Issues", label: "Issues", count: tabCounts.issues },
+              { key: "Site-wide", label: "Site-wide" },
+              { key: "Links", label: "Links", count: tabCounts.links },
+              { key: "Compare", label: "Compare" },
+            ]}
+            active={activeTab}
+            onChange={selectTab}
+          />
           {activeTab === "Overview" ? (
             <OverviewTab status={status} themes={themes} crawlId={crawlId} onScheduleChange={refetchStatus} />
           ) : null}
-          {activeTab === "Pages" ? <PagesTab crawlId={crawlId} /> : null}
-          {activeTab === "Issues" ? <IssuesTab crawlId={crawlId} /> : null}
-          {activeTab === "Links" ? <LinksTab crawlId={crawlId} /> : null}
+          {activeTab === "Pages" ? (
+            <div className="flex flex-col gap-3">
+              <PagesTab
+                crawlId={crawlId}
+                initialSearch={pagesInitialSearch}
+                selectedId={selectedRow?.type === "page" ? selectedRow.data.id : null}
+                onSelect={(row) => setSelectedRow({ type: "page", data: row })}
+              />
+              <DetailPanel crawlId={crawlId} selected={selectedRow} onViewPage={viewPage} />
+            </div>
+          ) : null}
+          {activeTab === "Issues" ? (
+            <div className="flex flex-col gap-3">
+              <IssuesTab
+                crawlId={crawlId}
+                selectedId={selectedRow?.type === "issue" ? selectedRow.data.id : null}
+                onSelect={(row) => setSelectedRow({ type: "issue", data: row })}
+              />
+              <DetailPanel crawlId={crawlId} selected={selectedRow} onViewPage={viewPage} />
+            </div>
+          ) : null}
+          {activeTab === "Site-wide" ? <SitewideTab crawlId={crawlId} /> : null}
+          {activeTab === "Links" ? (
+            <div className="flex flex-col gap-3">
+              <LinksTab
+                crawlId={crawlId}
+                selectedId={selectedRow?.type === "link" ? selectedRow.data.id : null}
+                onSelect={(row) => setSelectedRow({ type: "link", data: row })}
+              />
+              <DetailPanel crawlId={crawlId} selected={selectedRow} onViewPage={viewPage} />
+            </div>
+          ) : null}
           {activeTab === "Compare" ? <CompareTab crawlId={crawlId} rootUrl={status.rootUrl} /> : null}
         </>
       )}
