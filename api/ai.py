@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from modules._http import read_json_body, require_str, send_json  # noqa: E402
 from modules.ai_assist import explain_audit, suggest_fix  # noqa: E402
+from modules.content_agent import SUPPORTED_ISSUE_TYPES, PageContext, draft_for_issue_type  # noqa: E402
 from worker.api_key_service import get_default_org_vaulted_key  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,59 @@ def _handle_fix_suggestion(handler, payload):
         send_json(handler, 500, {"ok": False, "error": "Internal error while generating the fix."})
 
 
+def _handle_content_draft(handler, payload):
+    """Anthropic-backed content draft (rebuild's Content Agent, 09 §1): given an
+    issue type + page context, draft an improved title or meta description.
+    Draft-only/additive — it never writes to a page. Uses the vaulted
+    'anthropic' key (or a per-request apiKey); degrades gracefully with no key.
+    """
+    try:
+        issue_type = require_str(handler, payload, "issueType", field_name="issueType")
+        if issue_type is None:
+            return
+        if issue_type not in SUPPORTED_ISSUE_TYPES:
+            send_json(handler, 400, {
+                "ok": False,
+                "error": f"No content draft available for '{issue_type}' "
+                         f"(supported: {sorted(SUPPORTED_ISSUE_TYPES)}).",
+            })
+            return
+
+        api_key = payload.get("apiKey") or get_default_org_vaulted_key("anthropic")
+        if not api_key:
+            send_json(handler, 400, {
+                "ok": False,
+                "error": "No Anthropic API key is configured. Add one under "
+                         "Settings → API keys (provider 'anthropic') to enable AI drafts.",
+            })
+            return
+
+        ctx = PageContext(
+            url=(payload.get("url") or "").strip(),
+            title=payload.get("title"),
+            meta_description=payload.get("metaDescription"),
+            h1=payload.get("h1"),
+        )
+
+        from modules.llm import AnthropicLLM  # local import: only when a draft is requested
+        llm = AnthropicLLM(api_key=api_key)
+        draft = draft_for_issue_type(llm, issue_type, ctx)
+        if draft is None:
+            send_json(handler, 502, {"ok": False, "error": "The model did not return a usable draft."})
+            return
+        send_json(handler, 200, {
+            "ok": True,
+            "suggestionType": draft.suggestion_type,
+            "draftText": draft.draft_text,
+            "confidence": draft.confidence,
+            "model": draft.model,
+            "withinBounds": draft.within_bounds,
+        })
+    except Exception:  # noqa: BLE001
+        logger.exception("ai.py (content-draft) request failed")
+        send_json(handler, 500, {"ok": False, "error": "Internal error while drafting content."})
+
+
 # Consolidates what used to be separate api/*.py files (ai-summary,
 # fix-suggestion, config-status) into one Vercel serverless function — see
 # api/audit-pipeline.py's module docstring-equivalent comment for why
@@ -65,6 +119,7 @@ def _handle_fix_suggestion(handler, payload):
 _ACTIONS = {
     "summary": _handle_summary,
     "fix-suggestion": _handle_fix_suggestion,
+    "content-draft": _handle_content_draft,
 }
 
 

@@ -92,9 +92,10 @@ class TestAuditPipelineDispatch:
 
 class TestAiDispatch:
     def test_ai_actions_registered(self):
-        # "chat" was removed in Session 24 (chatbot dropped); the AI layer now
-        # only does the audit summary and personalized fix suggestions.
-        assert set(ai._ACTIONS) == {"summary", "fix-suggestion"}
+        # "chat" was removed in Session 24 (chatbot dropped). "content-draft"
+        # was added when the rebuild's Anthropic-backed Content Agent was folded
+        # in (draft-only title/meta suggestions).
+        assert set(ai._ACTIONS) == {"summary", "fix-suggestion", "content-draft"}
 
     def test_unknown_action_returns_400(self):
         h = _mock_handler({"action": "nope"})
