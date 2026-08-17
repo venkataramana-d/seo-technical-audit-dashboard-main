@@ -11,7 +11,8 @@
 
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 
-export type AuthUser = { id: number; email: string; orgId: number | null };
+export type AuthRole = "admin" | "user";
+export type AuthUser = { id: number; email: string; orgId: number | null; role: AuthRole | null };
 export type AuthStatus = "loading" | "authed" | "anon" | "unavailable";
 
 type AuthContextValue = {

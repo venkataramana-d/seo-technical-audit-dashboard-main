@@ -58,6 +58,9 @@ def _cookie_header_from(set_cookie: str) -> str:
     return set_cookie.split(";", 1)[0]
 
 
+ADMIN_EMAIL = "owner@acme.test"
+
+
 @pytest.fixture
 def isolated_db(monkeypatch):
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
@@ -65,6 +68,20 @@ def isolated_db(monkeypatch):
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     monkeypatch.setattr(auth_api, "SessionLocal", factory)
     return factory
+
+
+@pytest.fixture(autouse=True)
+def pinned_admin(monkeypatch):
+    """Pin a deterministic workspace admin for every test (the real default is
+    a hard-coded company email)."""
+    monkeypatch.setattr(auth, "ADMIN_EMAIL", ADMIN_EMAIL)
+    return ADMIN_EMAIL
+
+
+def _signup(email, password="hunter2xy", org="Acme"):
+    h = _mock_handler({"action": "signup", "email": email, "password": password, "orgName": org})
+    auth_api.handler.do_POST(h)
+    return h
 
 
 # ---- password hashing ----
@@ -106,36 +123,30 @@ def test_session_token_expired_is_rejected(monkeypatch):
 # ---- api/auth.py flow ----
 
 def test_signup_sets_cookie_and_returns_user(isolated_db):
-    h = _mock_handler({"action": "signup", "email": "a@b.com", "password": "hunter2xy", "orgName": "Acme"})
-    auth_api.handler.do_POST(h)
+    h = _signup(ADMIN_EMAIL, org="Acme")
     status, body = _status_and_body(h)
     assert status == 201
-    assert body["user"]["email"] == "a@b.com"
+    assert body["user"]["email"] == ADMIN_EMAIL
     assert body["user"]["orgId"] is not None
     assert _set_cookie(h) and _cookie_header_from(_set_cookie(h)).startswith("sa_session=")
 
 
 def test_duplicate_signup_returns_409(isolated_db):
-    for _ in range(1):
-        h = _mock_handler({"action": "signup", "email": "dup@b.com", "password": "hunter2xy", "orgName": "A"})
-        auth_api.handler.do_POST(h)
-    h2 = _mock_handler({"action": "signup", "email": "dup@b.com", "password": "hunter2xy", "orgName": "B"})
-    auth_api.handler.do_POST(h2)
-    status, body = _status_and_body(h2)
+    _signup(ADMIN_EMAIL, org="A")
+    h2 = _signup(ADMIN_EMAIL, org="B")
+    status, _ = _status_and_body(h2)
     assert status == 409
 
 
 def test_short_password_rejected(isolated_db):
-    h = _mock_handler({"action": "signup", "email": "s@b.com", "password": "short", "orgName": "A"})
-    auth_api.handler.do_POST(h)
+    h = _signup(ADMIN_EMAIL, password="short")
     status, _ = _status_and_body(h)
     assert status == 400
 
 
 def test_login_wrong_password_401_no_leak(isolated_db):
-    h = _mock_handler({"action": "signup", "email": "u@b.com", "password": "hunter2xy", "orgName": "A"})
-    auth_api.handler.do_POST(h)
-    h2 = _mock_handler({"action": "login", "email": "u@b.com", "password": "nope"})
+    _signup(ADMIN_EMAIL, org="A")
+    h2 = _mock_handler({"action": "login", "email": ADMIN_EMAIL, "password": "nope"})
     auth_api.handler.do_POST(h2)
     status, body = _status_and_body(h2)
     assert status == 401
@@ -147,15 +158,63 @@ def test_login_wrong_password_401_no_leak(isolated_db):
 
 
 def test_login_then_me_roundtrip(isolated_db):
-    h = _mock_handler({"action": "signup", "email": "me@b.com", "password": "hunter2xy", "orgName": "A"})
-    auth_api.handler.do_POST(h)
+    h = _signup(ADMIN_EMAIL, org="A")
     cookie = _cookie_header_from(_set_cookie(h))
 
     me = _mock_handler(cookie=cookie)
     auth_api.handler.do_GET(me)
     status, body = _status_and_body(me)
     assert status == 200
-    assert body["user"]["email"] == "me@b.com"
+    assert body["user"]["email"] == ADMIN_EMAIL
+
+
+# ---- roles: admin vs user in one shared workspace ----
+
+def test_admin_email_signup_gets_admin_role(isolated_db):
+    h = _signup(ADMIN_EMAIL)
+    status, body = _status_and_body(h)
+    assert status == 201
+    assert body["user"]["role"] == "admin"
+
+
+def test_admin_email_is_case_insensitive(isolated_db):
+    h = _signup("Owner@ACME.test")
+    status, body = _status_and_body(h)
+    assert status == 201
+    assert body["user"]["role"] == "admin"
+
+
+def test_user_joins_admin_workspace_as_user_role(isolated_db):
+    admin_h = _signup(ADMIN_EMAIL, org="HQ")
+    _, admin_body = _status_and_body(admin_h)
+    admin_org = admin_body["user"]["orgId"]
+
+    user_h = _signup("teammate@acme.test")
+    status, body = _status_and_body(user_h)
+    assert status == 201
+    assert body["user"]["role"] == "user"
+    # a regular user lands in the SAME shared workspace as the admin
+    assert body["user"]["orgId"] == admin_org
+
+
+def test_user_signup_blocked_until_admin_exists(isolated_db):
+    h = _signup("teammate@acme.test")
+    status, _ = _status_and_body(h)
+    assert status == 403
+
+
+def test_require_admin_allows_admin_blocks_user(isolated_db):
+    factory = isolated_db
+    admin_cookie = _cookie_header_from(_set_cookie(_signup(ADMIN_EMAIL)))
+    user_cookie = _cookie_header_from(_set_cookie(_signup("teammate@acme.test")))
+
+    with factory() as db:
+        # admin passes (returns their uid, no raise)
+        assert auth.require_admin(_mock_handler(cookie=admin_cookie), db) > 0
+        # a signed-in regular user is rejected with 403
+        with pytest.raises(auth.AuthError) as ei:
+            auth.require_admin(_mock_handler(cookie=user_cookie), db)
+        assert ei.value.status == 403
 
 
 def test_me_without_cookie_is_null(isolated_db):

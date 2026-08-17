@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from modules._http import read_json_body, require_str, send_json  # noqa: E402
 from modules.ai_assist import _chat  # noqa: E402
 from modules.pagespeed import fetch_pagespeed  # noqa: E402
+from worker.auth import AuthError, require_admin  # noqa: E402
 from worker.api_key_service import (  # noqa: E402
     delete_api_key,
     get_api_key,
@@ -153,4 +154,13 @@ class handler(BaseHTTPRequestHandler):
         if fn is None:
             send_json(self, 400, {"ok": False, "error": f"Unknown or missing action (expected one of {sorted(_ACTIONS)})"})
             return
+        # set/delete mutate the shared credential vault -> admin only. 'test'
+        # only exercises an already-saved key, so any signed-in user may run it.
+        if action in ("set", "delete"):
+            try:
+                with SessionLocal() as db:
+                    require_admin(self, db)
+            except AuthError as e:
+                send_json(self, e.status, {"ok": False, "error": e.message})
+                return
         fn(self, payload)

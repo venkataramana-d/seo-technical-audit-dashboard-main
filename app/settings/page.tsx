@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAudit } from "@/lib/state/AuditContext";
+import { useAuth } from "@/lib/state/AuthContext";
 import { Card, PageHeader } from "@/components/ui";
 import { MoonIcon, SettingsIcon, SunIcon } from "@/components/icons";
 import { useTheme } from "@/lib/useTheme";
@@ -170,11 +171,29 @@ function ApiKeyVaultCard() {
   );
 }
 
+function VaultAdminOnlyNotice() {
+  return (
+    <Card className="mb-4">
+      <h3 className="mb-2 text-sm font-semibold text-[var(--seo-subheading)]">API Key Vault</h3>
+      <p className="text-sm text-[var(--seo-text-light)]">
+        Shared provider API keys (PageSpeed, Groq, etc.) are managed by your workspace
+        admin. Ask an admin if a provider needs to be added or updated.
+      </p>
+    </Card>
+  );
+}
+
 export default function SettingsPage() {
   const { results, clearAll, groqApiKey, setGroqApiKey, profile, setProfile } = useAudit();
   const { dark, setDark } = useTheme();
   const { psiConfigured, groqConfigured } = useAiConfigStatus();
+  const { user, status } = useAuth();
   const [confirmClear, setConfirmClear] = useState(false);
+
+  // Only hide the vault manager when we positively know the signed-in user is a
+  // non-admin. In local dev the auth backend is "unavailable" (role null), so
+  // the manager stays visible there.
+  const isNonAdminUser = status === "authed" && user?.role === "user";
 
   return (
     <div>
@@ -326,7 +345,7 @@ export default function SettingsPage() {
         </p>
       </Card>
 
-      <ApiKeyVaultCard />
+      {isNonAdminUser ? <VaultAdminOnlyNotice /> : <ApiKeyVaultCard />}
 
       <Card>
         <h3 className="mb-2 text-sm font-semibold text-[var(--seo-subheading)]">

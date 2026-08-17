@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from modules._http import read_json_body, require_str, send_json  # noqa: E402
 from worker.auth import (  # noqa: E402
     AuthError, build_session_cookie, create_session_token, get_session_user_id,
-    login as auth_login, primary_org_id, signup as auth_signup,
+    login as auth_login, primary_org_id, role_for_user, signup as auth_signup,
 )
 from worker.db.models import User  # noqa: E402
 from worker.db.session import SessionLocal  # noqa: E402
@@ -40,7 +40,12 @@ def _send_json_with_cookie(handler, status, data, cookie: str | None = None):
 
 
 def _user_dto(db, user: User) -> dict:
-    return {"id": user.id, "email": user.email, "orgId": primary_org_id(db, user.id)}
+    return {
+        "id": user.id,
+        "email": user.email,
+        "orgId": primary_org_id(db, user.id),
+        "role": role_for_user(db, user.id),  # "admin" | "user"
+    }
 
 
 def _handle_signup(handler, payload):

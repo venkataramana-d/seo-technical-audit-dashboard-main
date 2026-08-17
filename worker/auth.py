@@ -26,6 +26,22 @@ from worker.db.models import Membership, Organization, User
 SESSION_COOKIE = "sa_session"
 SESSION_TTL_SECONDS = 60 * 60 * 24 * 7  # 7 days
 
+# --------------------------------------------------------------------------- #
+# Roles / workspace admin
+#
+# Two account types only: the designated ADMIN_EMAIL is the workspace "admin"
+# (owner of the single shared org); every other signup joins that same
+# workspace as a "user". Overridable via the ADMIN_EMAIL env var so the admin
+# can be renamed on a deploy without a code change.
+# --------------------------------------------------------------------------- #
+ADMIN_EMAIL = (os.environ.get("ADMIN_EMAIL") or "venkat.r@edstellar.com").strip().lower()
+ROLE_ADMIN = "admin"
+ROLE_USER = "user"
+
+
+def is_admin_email(email: str) -> bool:
+    return email.strip().lower() == ADMIN_EMAIL
+
 # scrypt cost parameters (interop not required — Python signs and verifies).
 _SCRYPT_N = 16384
 _SCRYPT_R = 8
@@ -171,26 +187,85 @@ def require_user_id(handler) -> int:
 # DB operations (users / organizations / memberships)
 # --------------------------------------------------------------------------- #
 def signup(db, email: str, password: str, org_name: str) -> User:
-    """Create a user, their organization, and an owner membership. Raises
-    AuthError(409) if the email already exists."""
+    """Create a user account.
+
+    The designated ADMIN_EMAIL creates and owns the single shared workspace
+    (role 'admin'); every other signup joins that same workspace as a 'user'.
+    Raises AuthError(409) if the email already exists, or AuthError(403) if a
+    non-admin tries to sign up before the admin workspace has been created."""
     email = email.strip().lower()
     existing = db.scalar(select(User).where(User.email == email))
     if existing is not None:
         raise AuthError(409, "an account with this email already exists")
 
+    admin = is_admin_email(email)
+
+    # A regular user can only join once the admin workspace exists.
+    join_org_id = None
+    if not admin:
+        join_org_id = _admin_org_id(db)
+        if join_org_id is None:
+            raise AuthError(
+                403,
+                "This workspace isn't set up yet. Ask your administrator to create the account first.",
+            )
+
     user = User(email=email, password_hash=hash_password(password))
     db.add(user)
     try:
         db.flush()
-        org = Organization(name=org_name.strip() or f"{email}'s workspace")
-        db.add(org)
-        db.flush()
-        db.add(Membership(user_id=user.id, org_id=org.id, role="owner"))
+        if admin:
+            org = Organization(name=org_name.strip() or f"{email}'s workspace")
+            db.add(org)
+            db.flush()
+            db.add(Membership(user_id=user.id, org_id=org.id, role=ROLE_ADMIN))
+        else:
+            db.add(Membership(user_id=user.id, org_id=join_org_id, role=ROLE_USER))
         db.commit()
     except IntegrityError:
         db.rollback()
         raise AuthError(409, "an account with this email already exists")
     return user
+
+
+def _admin_org_id(db) -> int | None:
+    """The org owned by the designated admin, or None if the admin hasn't
+    registered yet (so non-admin signups can be held back until then)."""
+    admin_user_id = db.scalar(select(User.id).where(User.email == ADMIN_EMAIL))
+    if admin_user_id is None:
+        return None
+    return primary_org_id(db, admin_user_id)
+
+
+def role_for_user(db, user_id: int) -> str | None:
+    """The user's role in their primary org ('admin' | 'user'), or None if the
+    user has no membership."""
+    return db.scalar(
+        select(Membership.role)
+        .where(Membership.user_id == user_id)
+        .order_by(Membership.org_id)
+    )
+
+
+def is_admin(db, user_id: int) -> bool:
+    return role_for_user(db, user_id) == ROLE_ADMIN
+
+
+def require_admin(handler, db) -> int:
+    """Authenticated user id if they are the workspace admin, else raise.
+
+    Mirrors access.resolve_org_id's dev/test fallback: deployed (VERCEL) with
+    no session -> 401; a signed-in non-admin -> 403; local/dev and the test
+    suite (no VERCEL, no session) fall through as privileged so the existing
+    single-tenant flows and pytest keep working without seeding a login."""
+    uid = get_session_user_id(handler)
+    if uid is None:
+        if os.environ.get("VERCEL"):
+            raise AuthError(401, "authentication required")
+        return 0
+    if not is_admin(db, uid):
+        raise AuthError(403, "admin privileges required")
+    return uid
 
 
 _dummy_hash: str | None = None
